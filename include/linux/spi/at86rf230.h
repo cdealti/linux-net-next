@@ -26,6 +26,19 @@ struct at86rf230_platform_data {
 	int rstn;
 	int slp_tr;
 	int dig2;
+	/*
+	 * Some attributes to working
+	 * with atusb driver.
+	 *
+	 * atusb_reset: reset callback to send reset request.
+	 * atusb_sleep: sleep callback to send sleep request.
+	 * atusb_data: private data for callbacks.
+	 * atusb_tasklet: for atusb interrupt handling.
+	 */
+	void (*atusb_reset)(void *atusb_data);
+	void (*atusb_sleep)(void *atusb_data);
+	void *atusb_data;
+	struct tasklet_struct *atusb_tasklet;
 };
 
 #endif

@@ -53,6 +53,12 @@ struct at86rf230_local {
 	spinlock_t lock;
 	bool irq_busy;
 	bool is_tx;
+
+	/* atusb */
+	void (*atusb_reset)(void *atusb_data);
+	void (*atusb_sleep)(void *atusb_data);
+	void *atusb_data;
+	struct tasklet_struct *atusb_tasklet;
 };
 
 #define	RG_TRX_STATUS	(0x01)
@@ -742,6 +748,11 @@ static int at86rf230_hw_init(struct at86rf230_local *lp)
 	return 0;
 }
 
+static void atusb_tasklet(unsigned long data)
+{
+	at86rf230_isr(0, (void *)data);
+}
+
 static int at86rf230_fill_data(struct spi_device *spi)
 {
 	struct at86rf230_local *lp = spi_get_drvdata(spi);
@@ -755,6 +766,16 @@ static int at86rf230_fill_data(struct spi_device *spi)
 	lp->rstn = pdata->rstn;
 	lp->slp_tr = pdata->slp_tr;
 	lp->dig2 = pdata->dig2;
+
+	/* atusb */
+	lp->atusb_reset = pdata->atusb_reset;
+	lp->atusb_sleep = pdata->atusb_sleep;
+	lp->atusb_data = pdata->atusb_data;
+	lp->atusb_tasklet = pdata->atusb_tasklet;
+
+	if (lp->atusb_tasklet)
+		tasklet_init(lp->atusb_tasklet, atusb_tasklet,
+				(unsigned long)lp);
 
 	return 0;
 }
@@ -800,32 +821,37 @@ static int at86rf230_probe(struct spi_device *spi)
 	if (rc)
 		goto err_fill;
 
-	rc = gpio_request(lp->rstn, "rstn");
-	if (rc)
-		goto err_rstn;
+	if (!lp->atusb_reset) {
+		rc = gpio_request(lp->rstn, "rstn");
+		if (rc)
+			goto err_rstn;
+		
+		rc = gpio_direction_output(lp->rstn, 1);
+		if (rc)
+			goto err_slp_tr;
 
-	if (gpio_is_valid(lp->slp_tr)) {
+	}
+
+	if (gpio_is_valid(lp->slp_tr) && !lp->atusb_sleep) {
 		rc = gpio_request(lp->slp_tr, "slp_tr");
 		if (rc)
 			goto err_slp_tr;
-	}
-
-	rc = gpio_direction_output(lp->rstn, 1);
-	if (rc)
-		goto err_gpio_dir;
-
-	if (gpio_is_valid(lp->slp_tr)) {
+	
 		rc = gpio_direction_output(lp->slp_tr, 0);
 		if (rc)
 			goto err_gpio_dir;
 	}
 
 	/* Reset */
-	msleep(1);
-	gpio_set_value(lp->rstn, 0);
-	msleep(1);
-	gpio_set_value(lp->rstn, 1);
-	msleep(1);
+	if (!lp->atusb_reset) {
+		msleep(1);
+		gpio_set_value(lp->rstn, 0);
+		msleep(1);
+		gpio_set_value(lp->rstn, 1);
+		msleep(1);
+	} else {
+		lp->atusb_reset(lp->atusb_data);
+	}
 
 	rc = at86rf230_read_subreg(lp, SR_MAN_ID_0, &man_id_0);
 	if (rc)
@@ -873,11 +899,13 @@ static int at86rf230_probe(struct spi_device *spi)
 	if (rc)
 		goto err_gpio_dir;
 
-	rc = request_irq(spi->irq, at86rf230_isr,
-			 IRQF_SHARED | IRQF_TRIGGER_RISING,
-			 dev_name(&spi->dev), lp);
-	if (rc)
-		goto err_gpio_dir;
+	if (!lp->atusb_tasklet) {
+		rc = request_irq(spi->irq, at86rf230_isr,
+				 IRQF_SHARED | IRQF_TRIGGER_RISING,
+				 dev_name(&spi->dev), lp);
+		if (rc)
+			goto err_gpio_dir;
+	}
 
 	/* Read irq status register to reset irq line */
 	rc = at86rf230_read_subreg(lp, RG_IRQ_STATUS, 0xff, 0, &status);
@@ -892,13 +920,16 @@ static int at86rf230_probe(struct spi_device *spi)
 
 	ieee802154_unregister_device(lp->dev);
 err_irq:
-	free_irq(spi->irq, lp);
+	if (!lp->atusb_tasklet)
+		free_irq(spi->irq, lp);
 	flush_work(&lp->irqwork);
 err_gpio_dir:
-	if (gpio_is_valid(lp->slp_tr))
+	if (gpio_is_valid(lp->slp_tr) &&
+			!lp->atusb_sleep)
 		gpio_free(lp->slp_tr);
 err_slp_tr:
-	gpio_free(lp->rstn);
+	if (!lp->atusb_reset)
+		gpio_free(lp->rstn);
 err_rstn:
 err_fill:
 	spi_set_drvdata(spi, NULL);
@@ -913,12 +944,16 @@ static int at86rf230_remove(struct spi_device *spi)
 
 	ieee802154_unregister_device(lp->dev);
 
-	free_irq(spi->irq, lp);
+	if (!lp->atusb_tasklet)
+		free_irq(spi->irq, lp);
 	flush_work(&lp->irqwork);
 
-	if (gpio_is_valid(lp->slp_tr))
+	if (gpio_is_valid(lp->slp_tr) &&
+			!lp->atusb_sleep)
 		gpio_free(lp->slp_tr);
-	gpio_free(lp->rstn);
+
+	if (!lp->atusb_reset)
+		gpio_free(lp->rstn);
 
 	spi_set_drvdata(spi, NULL);
 	mutex_destroy(&lp->bmux);
