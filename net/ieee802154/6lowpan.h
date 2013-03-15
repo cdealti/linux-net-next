@@ -448,7 +448,11 @@ static inline void lowpan_set_tc_flbl_to_ipv6(struct ipv6hdr *hdr,
 #define LOWPAN_IPHC0_TIFC	(2 << LOWPAN_IPHC0_TF_SHIFT)
 #define LOWPAN_IPHC0_TCFC	(3 << LOWPAN_IPHC0_TF_SHIFT)
 
-#define LOWPAN_IPHC_NH_C	0x04
+#define LOWPAN_IPHC0_NH_MASK	0x04
+#define LOWPAN_IPHC0_NH_SHIFT	2
+#define LOWPAN_IPHC0_NH_SIZE	1
+#define LOWPAN_IPHC0_NH_C	(1 << LOWPAN_IPHC0_NH_SHIFT)
+
 #define LOWPAN_IPHC_TTL_1	0x01
 #define LOWPAN_IPHC_TTL_64	0x02
 #define LOWPAN_IPHC_TTL_255	0x03

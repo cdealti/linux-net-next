@@ -466,9 +466,10 @@ static int lowpan_header_create(struct sk_buff *skb,
 
 	/* Next Header is compress if UDP */
 	if (hdr->nexthdr == UIP_PROTO_UDP)
-		iphc0 |= LOWPAN_IPHC_NH_C;
+		iphc0 |= LOWPAN_IPHC0_NH_C;
 	else
-		set_hc_ptr_data(hc_ptr, &hdr->nexthdr, 1);
+		set_hc_ptr_data(&hc06_ptr, &hdr->nexthdr,
+				LOWPAN_IPHC0_NH_SIZE);
 
 	/*
 	 * Hop limit
@@ -900,9 +901,10 @@ lowpan_process_data(struct sk_buff *skb)
 
 
 	/* Next Header */
-	if ((iphc0 & LOWPAN_IPHC_NH_C) == 0) {
+	if ((iphc0 & LOWPAN_IPHC0_NH_C) == 0) {
 		/* Next header is carried inline */
-		if (lowpan_fetch_skb(skb, &(hdr.nexthdr), 1))
+		if (lowpan_fetch_skb(skb, &(hdr.nexthdr),
+					LOWPAN_IPHC0_NH_SIZE))
 			goto drop;
 
 		pr_debug("NH flag is set, next header carried inline: %02x\n",
@@ -958,7 +960,7 @@ lowpan_process_data(struct sk_buff *skb)
 	}
 
 	/* UDP data uncompression */
-	if (iphc0 & LOWPAN_IPHC_NH_C) {
+	if (iphc0 & LOWPAN_IPHC0_NH_C) {
 		struct udphdr uh;
 		struct sk_buff *new;
 		if (lowpan_uncompress_udp_header(skb, &uh))
