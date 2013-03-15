@@ -171,82 +171,6 @@ static inline void lowpan_raw_dump_table(const char *caller, char *msg,
 		       16, 1, buf, len, false);
 }
 
-static u8
-lowpan_compress_addr_64(u8 **hc06_ptr, u8 shift, const struct in6_addr *ipaddr,
-		 const unsigned char *lladdr)
-{
-	u8 val = 0;
-
-	if (is_addr_mac_addr_based(ipaddr, lladdr))
-		val = 3; /* 0-bits */
-	else if (lowpan_is_iid_16_bit_compressable(ipaddr)) {
-		/* compress IID to 16 bits xxxx::XXXX */
-		memcpy(*hc06_ptr, &ipaddr->s6_addr16[7], 2);
-		*hc06_ptr += 2;
-		val = 2; /* 16-bits */
-	} else {
-		/* do not compress IID => xxxx::IID */
-		memcpy(*hc06_ptr, &ipaddr->s6_addr16[4], 8);
-		*hc06_ptr += 8;
-		val = 1; /* 64-bits */
-	}
-
-	return rol8(val, shift);
-}
-
-static void
-lowpan_uip_ds6_set_addr_iid(struct in6_addr *ipaddr, unsigned char *lladdr)
-{
-	memcpy(&ipaddr->s6_addr[8], lladdr, IEEE802154_ADDR_LEN);
-	/* second bit-flip (Universe/Local) is done according RFC2464 */
-	ipaddr->s6_addr[8] ^= 0x02;
-}
-
-/*
- * Uncompress addresses based on a prefix and a postfix with zeroes in
- * between. If the postfix is zero in length it will use the link address
- * to configure the IP address (autoconf style).
- * pref_post_count takes a byte where the first nibble specify prefix count
- * and the second postfix count (NOTE: 15/0xf => 16 bytes copy).
- */
-static int
-lowpan_uncompress_addr(struct sk_buff *skb, struct in6_addr *ipaddr,
-	u8 const *prefix, u8 pref_post_count, unsigned char *lladdr)
-{
-	u8 prefcount = pref_post_count >> 4;
-	u8 postcount = pref_post_count & 0x0f;
-
-	/* full nibble 15 => 16 */
-	prefcount = (prefcount == 15 ? 16 : prefcount);
-	postcount = (postcount == 15 ? 16 : postcount);
-
-	if (lladdr)
-		lowpan_raw_dump_inline(__func__, "linklocal address",
-						lladdr,	IEEE802154_ADDR_LEN);
-	if (prefcount > 0)
-		memcpy(ipaddr, prefix, prefcount);
-
-	if (prefcount + postcount < 16)
-		memset(&ipaddr->s6_addr[prefcount], 0,
-					16 - (prefcount + postcount));
-
-	if (postcount > 0) {
-		memcpy(&ipaddr->s6_addr[16 - postcount], skb->data, postcount);
-		skb_pull(skb, postcount);
-	} else if (prefcount > 0) {
-		if (lladdr == NULL)
-			return -EINVAL;
-
-		/* no IID based configuration if no prefix and no data */
-		lowpan_uip_ds6_set_addr_iid(ipaddr, lladdr);
-	}
-
-	pr_debug("uncompressing %d + %d => ", prefcount, postcount);
-	lowpan_raw_dump_inline(NULL, NULL, ipaddr->s6_addr, 16);
-
-	return 0;
-}
-
 static void
 lowpan_compress_udp_header(u8 **hc06_ptr, struct sk_buff *skb)
 {
@@ -356,6 +280,139 @@ lowpan_uncompress_udp_header(struct sk_buff *skb, struct udphdr *uh)
 	return 0;
 err:
 	return -EINVAL;
+}
+
+/*
+ * This function compress a ipv6 address for the
+ * 6lowpan header.
+ * Parameters is_daddr and layer_addr are dependcy on
+ * which address should be compressed, src or dest.
+ *
+ * Parameters:
+ *	- hc_ptr: pointer of 6lowpan header.
+ *	- is_daddr: to set val on DAM or SAM bit.
+ *		    For DAM bit, this should be 1.
+ *	- ipaddr: ipv6 address which should be compressed.
+ *	- iphc1: pointer of iphc1 byte.
+ *	- layer_addr: dest or src layer_addr from mac802154.
+ */
+static void lowpan_compress_addr(u8 **hc_ptr,
+		const int is_daddr,
+		const struct in6_addr *ipaddr,
+		u8 *iphc1, const u8 *layer_addr)
+{
+	u8 val;
+
+#ifdef DEBUG
+	if (is_daddr)
+		pr_debug("destination address is linklocal:\n");
+	else
+		pr_debug("source address is linklocal:\n");
+	lowpan_raw_dump_inline(NULL, NULL, ipaddr->s6_addr, 16);
+#endif
+
+	if (is_addr_link_local(ipaddr)) {
+		if (is_addr_mac_addr_based(ipaddr, layer_addr)) {
+			pr_debug("address is mac based on:\n");
+			lowpan_raw_dump_inline(NULL, NULL, layer_addr, IEEE802154_ADDR_LEN);
+			pr_debug("address is full elided\n");
+
+			/*
+			 * fe:80::XXXX:XXXX:XXXX:XXXX
+			 *        \_________________/
+			 *             layer_addr
+			 */
+			val = LOWPAN_IPHC1_ADDR_C_128;
+		} else if (lowpan_is_iid_16_bit_compressable(ipaddr)) {
+			pr_debug("compressed to 2 octet\n");
+		
+			/*
+			 * fe:80::XXXX
+			 */
+			val = LOWPAN_IPHC1_ADDR_C_2;
+			set_hc_ptr_data(hc_ptr, &ipaddr->s6_addr[14], 2);
+		} else {
+			pr_debug("compressed to 8 octet\n");
+		
+			/*
+			 * fe:80::XXXX:XXXX:XXXX:XXXX
+			 */
+			val = LOWPAN_IPHC1_ADDR_C_8;
+			set_hc_ptr_data(hc_ptr, &ipaddr->s6_addr[8], 8);
+		}
+	} else {
+		pr_debug("using full address\n");
+		
+		/*
+		 * for global link addresses
+		 */
+		val = LOWPAN_IPHC1_ADDR_C_0;
+		set_hc_ptr_data(hc_ptr, ipaddr->s6_addr, 16);
+	}
+
+	/*
+	 * We can do the same function for destination address
+	 * and source address, but not for multicast address.
+	 *
+	 * Setting val for destination to DAM bit and for
+	 * source to SAM bit.
+	 */
+	if (is_daddr)
+		*iphc1 |= (val << LOWPAN_IPHC1_DAM_SHIFT);
+	else
+		*iphc1 |= (val << LOWPAN_IPHC1_SAM_SHIFT);
+}
+
+/*
+ * This function compress a multicast ipv6 destination address
+ * to the 6lowpan header.
+ *
+ * Parameters:
+ *	- hc_ptr: pointer of 6lowpan header.
+ *	- ipaddr: ipv6 address which should be compressed.
+ *	- iphc1: pointer of iphc1 byte.
+ */
+static void lowpan_compress_multicast_daddr(u8 **hc_ptr,
+		const struct in6_addr *ipaddr, u8 *iphc1)
+{
+	pr_debug("destination address is multicast:\n");
+	lowpan_raw_dump_inline(NULL, NULL, ipaddr->s6_addr, 16);
+	
+	if (lowpan_is_mcast_addr_compressable8(ipaddr)) {
+		pr_debug("compressed to 1 octet\n");
+		
+		/*
+		 * ff:02::00XX
+		 */
+		*iphc1 |= LOWPAN_IPHC1_DAM_C_8;
+		set_hc_ptr_data(hc_ptr, &ipaddr->s6_addr[15], 1);
+	} else if (lowpan_is_mcast_addr_compressable32(ipaddr)) {
+		pr_debug("compressed to 4 octets\n");
+		
+		/*
+		 * ff:XX::00XX:XXXX
+		 */
+		*iphc1 |= LOWPAN_IPHC1_DAM_C_32;
+		set_hc_ptr_data(hc_ptr, &ipaddr->s6_addr[1], 1);
+		set_hc_ptr_data(hc_ptr, &ipaddr->s6_addr[13], 3);
+	} else if (lowpan_is_mcast_addr_compressable48(ipaddr)) {
+		pr_debug("compressed to 6 octets\n");
+		
+		/*
+		 * ff:XX::00XX:XXXX:XXXX
+		 */
+		*iphc1 |= LOWPAN_IPHC1_DAM_C_48;
+		set_hc_ptr_data(hc_ptr, &ipaddr->s6_addr[1], 1);
+		set_hc_ptr_data(hc_ptr, &ipaddr->s6_addr[11], 5);
+	} else {
+		pr_debug("using full address\n");
+		
+		/*
+		 * can't compress here.
+		 */
+		*iphc1 |= LOWPAN_IPHC1_DAM_I;
+		set_hc_ptr_data(hc_ptr, ipaddr->s6_addr, 16);
+	}
 }
 
 static int lowpan_header_create(struct sk_buff *skb,
@@ -492,62 +549,91 @@ static int lowpan_header_create(struct sk_buff *skb,
 				LOWPAN_IPHC0_HLIM_SIZE);
 	}
 
-	/* source address compression */
-	if (is_addr_unspecified(&hdr->saddr)) {
-		pr_debug("source address is unspecified, setting SAC\n");
-		iphc1 |= LOWPAN_IPHC_SAC;
-	/* TODO: context lookup */
-	} else if (is_addr_link_local(&hdr->saddr)) {
-		pr_debug("source address is link-local\n");
-		iphc1 |= lowpan_compress_addr_64(&hc06_ptr,
-				LOWPAN_IPHC_SAM_BIT, &hdr->saddr, saddr);
-	} else {
-		pr_debug("send the full source address\n");
-		memcpy(hc06_ptr, &hdr->saddr.s6_addr16[0], 16);
-		hc06_ptr += 16;
-	}
+	/*
+	 * Setting CID bit.
+	 * This is necessary to handle context based
+	 * connection.
+	 *
+	 * CID
+	 * TODO:
+	 * Context based connection isn't supported
+	 * at the moment.
+	 */
 
-	/* destination address compression */
+	/*
+	 * Setting SAC bit.
+	 * This is necessary to handle context based
+	 * connection for the source address.
+	 *
+	 * SAC
+	 * TODO
+	 * Context based connection isn't supported
+	 * at the moment.
+	 */
+
+	/*
+	 * Setting SAM bit.
+	 *
+	 * The SAM bit indicate how the source address
+	 * is compressed.
+	 */
+	lowpan_compress_addr(&hc06_ptr, LOWPAN_IPHC1_ADDR_C_IS_SRC, 
+			&hdr->saddr, &iphc1, saddr);
+
+		/*
+	 * This part of this function determine the compression of
+	 * the destination address.
+	 */
 	if (is_addr_mcast(&hdr->daddr)) {
-		pr_debug("destination address is multicast: ");
-		iphc1 |= LOWPAN_IPHC_M;
-		if (lowpan_is_mcast_addr_compressable8(&hdr->daddr)) {
-			pr_debug("compressed to 1 octet\n");
-			iphc1 |= LOWPAN_IPHC_DAM_11;
-			/* use last byte */
-			*hc06_ptr = hdr->daddr.s6_addr[15];
-			hc06_ptr += 1;
-		} else if (lowpan_is_mcast_addr_compressable32(&hdr->daddr)) {
-			pr_debug("compressed to 4 octets\n");
-			iphc1 |= LOWPAN_IPHC_DAM_10;
-			/* second byte + the last three */
-			*hc06_ptr = hdr->daddr.s6_addr[1];
-			memcpy(hc06_ptr + 1, &hdr->daddr.s6_addr[13], 3);
-			hc06_ptr += 4;
-		} else if (lowpan_is_mcast_addr_compressable48(&hdr->daddr)) {
-			pr_debug("compressed to 6 octets\n");
-			iphc1 |= LOWPAN_IPHC_DAM_01;
-			/* second byte + the last five */
-			*hc06_ptr = hdr->daddr.s6_addr[1];
-			memcpy(hc06_ptr + 1, &hdr->daddr.s6_addr[11], 5);
-			hc06_ptr += 6;
-		} else {
-			pr_debug("using full address\n");
-			iphc1 |= LOWPAN_IPHC_DAM_00;
-			memcpy(hc06_ptr, &hdr->daddr.s6_addr[0], 16);
-			hc06_ptr += 16;
-		}
+		/*
+		 * Setting M bit.
+		 *
+		 * Destination address is a multicast address.
+		 * The M bit indicate that it is a multicast
+		 * address.
+		 */
+		iphc1 |= LOWPAN_IPHC1_M_C;
+
+		/*
+		 * Setting DAC bit.
+		 * This is necessary to handle context based
+		 * connection for the multicast destination address.
+		 *
+		 * DAC
+		 * TODO
+		 * Context based connection isn't supported
+		 * at the moment.
+		 */
+
+		/*
+		 * Setting DAM bit.
+		 *
+		 * The DAM bit indicate how the multicast destination
+		 * address is compressed.
+		 * 
+		 */
+		lowpan_compress_multicast_daddr(&hc06_ptr, &hdr->daddr, &iphc1);
 	} else {
-		/* TODO: context lookup */
-		if (is_addr_link_local(&hdr->daddr)) {
-			pr_debug("dest address is unicast and link-local\n");
-			iphc1 |= lowpan_compress_addr_64(&hc06_ptr,
-				LOWPAN_IPHC_DAM_BIT, &hdr->daddr, daddr);
-		} else {
-			pr_debug("dest address is unicast: using full one\n");
-			memcpy(hc06_ptr, &hdr->daddr.s6_addr16[0], 16);
-			hc06_ptr += 16;
-		}
+		/*
+		 * Setting DAC bit.
+		 * This is necessary to handle context based
+		 * connection for the linklocal destination address.
+		 *
+		 * DAC
+		 * TODO
+		 * Context based connection isn't supported
+		 * at the moment.
+		 */
+
+		/*
+		 * Setting DAM bit.
+		 *
+		 * The DAM bit indicate how the linklocal destination
+		 * address is compressed.
+		 * 
+		 */
+		lowpan_compress_addr(&hc06_ptr, LOWPAN_IPHC1_ADDR_C_IS_DEST,
+				&hdr->daddr, &iphc1, daddr);
 	}
 
 	/* UDP header compression */
@@ -712,12 +798,112 @@ frame_err:
 	return NULL;
 }
 
+static int lowpan_uncompress_addr(struct sk_buff *skb,
+		const int is_daddr,
+		struct in6_addr *ipaddr,
+		const u8 iphc1,
+		const u8 *layer_addr)
+{
+	u8 val;
+	const u16 prefix = htons(0xFE80);
+
+	/*
+	 * We use the same function for DAM bit and SAM bit.
+	 * So we need to determine if this is for a destination
+	 * or source address.
+	 */
+	if (is_daddr)
+		val = ((iphc1 & LOWPAN_IPHC1_DAM_MASK) 
+				>> LOWPAN_IPHC1_DAM_SHIFT);
+	else
+		val = ((iphc1 & LOWPAN_IPHC1_SAM_MASK)
+				>> LOWPAN_IPHC1_SAM_SHIFT);
+
+	switch (val) {
+	case LOWPAN_IPHC1_ADDR_C_0:
+		/*
+		 * for global link addresses
+		 */
+		lowpan_fetch_skb(skb, ipaddr->s6_addr, 16);
+		break;
+	case LOWPAN_IPHC1_ADDR_C_8:
+		/*
+		 * fe:80::XXXX:XXXX:XXXX:XXXX
+		 */
+		memcpy(ipaddr->s6_addr, &prefix, 2);
+		lowpan_fetch_skb(skb, &ipaddr->s6_addr[8], 8);
+		break;
+	case LOWPAN_IPHC1_ADDR_C_2:
+		/*
+		 * fe:80::XXXX
+		 */
+		memcpy(ipaddr->s6_addr, &prefix, 2);
+		lowpan_fetch_skb(skb, &ipaddr->s6_addr[14], 2);
+		break;
+	case LOWPAN_IPHC1_ADDR_C_128:
+		/*
+		 * fe:80::XXXX:XXXX:XXXX:XXXX
+		 *        \_________________/
+		 *             layer_addr
+		 */
+		memcpy(ipaddr->s6_addr, &prefix, 2);
+		memcpy(&ipaddr->s6_addr[8], layer_addr, IEEE802154_ADDR_LEN);
+		
+		/*
+		 * second bit-flip (Universe/Local)
+		 * is done according RFC2464
+		 */
+		ipaddr->s6_addr[8] ^= 0x02;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	pr_debug("Reconstructed ipv6 addr is:\n");
+	lowpan_raw_dump_inline(NULL, NULL, ipaddr->s6_addr, 16);
+
+	return 0;
+}
+
+static int lowpan_uncompress_multicast_daddr(struct sk_buff *skb,
+		struct in6_addr *ipaddr,
+		const u8 iphc1)
+{
+	const u16 prefix = htons(0xFF02);
+
+	switch (iphc1 & LOWPAN_IPHC1_DAM_MASK) {
+	case LOWPAN_IPHC1_DAM_I:
+		lowpan_fetch_skb(skb, ipaddr->s6_addr, 16);
+		break;
+	case LOWPAN_IPHC1_DAM_C_48:
+		memcpy(&ipaddr->s6_addr, &prefix, 1);
+		lowpan_fetch_skb(skb, &ipaddr->s6_addr[1], 1);
+		lowpan_fetch_skb(skb, &ipaddr->s6_addr[11], 5);
+		break;
+	case LOWPAN_IPHC1_DAM_C_32:
+		memcpy(&ipaddr->s6_addr, &prefix, 1);
+		lowpan_fetch_skb(skb, &ipaddr->s6_addr[1], 1);
+		lowpan_fetch_skb(skb, &ipaddr->s6_addr[13], 3);
+		break;
+	case LOWPAN_IPHC1_DAM_C_8:
+		memcpy(&ipaddr->s6_addr, &prefix, 2);
+		lowpan_fetch_skb(skb, &ipaddr->s6_addr[15], 1);
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	lowpan_raw_dump_inline(NULL, NULL, ipaddr->s6_addr, 16);
+
+	return 0;
+}
+
 static int
 lowpan_process_data(struct sk_buff *skb)
 {
 	struct ipv6hdr hdr = {};
 	u32 tc_flbl;
-	u8 tmp, iphc0, iphc1, num_context = 0;
+	u8 iphc0, iphc1, num_context = 0;
 	u8 *_saddr, *_daddr;
 	int err;
 
@@ -930,43 +1116,39 @@ lowpan_process_data(struct sk_buff *skb)
 		return -EINVAL;
 	}
 
-	/* Extract SAM to the tmp variable */
-	tmp = ((iphc1 & LOWPAN_IPHC_SAM) >> LOWPAN_IPHC_SAM_BIT) & 0x03;
-
-	/* Source address uncompression */
-	pr_debug("source address stateless compression\n");
-	err = lowpan_uncompress_addr(skb, &hdr.saddr, lowpan_llprefix,
-				lowpan_unc_llconf[tmp], skb->data);
-	if (err)
+	err = lowpan_uncompress_addr(skb, 0, &hdr.saddr,
+			iphc1, mac_cb(skb)->sa.hwaddr);
+	if (err < 0)
 		goto drop;
 
-	/* Extract DAM to the tmp variable */
-	tmp = ((iphc1 & LOWPAN_IPHC_DAM_11) >> LOWPAN_IPHC_DAM_BIT) & 0x03;
+	/*
+	 * M
+	 */
+	if (iphc1 & LOWPAN_IPHC1_M_C) {
+		/*
+		 * DAC
+		 * TODO
+		 */
 
-	/* check for Multicast Compression */
-	if (iphc1 & LOWPAN_IPHC_M) {
-		if (iphc1 & LOWPAN_IPHC_DAC) {
-			pr_debug("dest: context-based mcast compression\n");
-			/* TODO: implement this */
-		} else {
-			u8 prefix[] = {0xff, 0x02};
-
-			pr_debug("dest: non context-based mcast compression\n");
-			if (0 < tmp && tmp < 3) {
-				if (lowpan_fetch_skb(skb, &prefix[1], 1))
-					goto drop;
-			}
-
-			err = lowpan_uncompress_addr(skb, &hdr.daddr, prefix,
-					lowpan_unc_mxconf[tmp], NULL);
-			if (err)
-				goto drop;
-		}
+		/*
+		 * DAM
+		 */
+		err = lowpan_uncompress_multicast_daddr(skb,
+				&hdr.daddr, iphc1);
+		if (err < 0)
+			goto drop;
 	} else {
-		pr_debug("dest: stateless compression\n");
-		err = lowpan_uncompress_addr(skb, &hdr.daddr, lowpan_llprefix,
-				lowpan_unc_llconf[tmp], skb->data);
-		if (err)
+		/*
+		 * DAC
+		 * TODO
+		 */
+
+		/*
+		 * DAM
+		 */
+		err = lowpan_uncompress_addr(skb, 1, &hdr.daddr,
+				iphc1, mac_cb(skb)->da.hwaddr);
+		if (err < 0)
 			goto drop;
 	}
 
