@@ -468,7 +468,7 @@ static int lowpan_header_create(struct sk_buff *skb,
 	if (hdr->nexthdr == UIP_PROTO_UDP)
 		iphc0 |= LOWPAN_IPHC_NH_C;
 
-	if ((iphc0 & LOWPAN_IPHC_NH_C) == 0) {
+	if (!(iphc0 & LOWPAN_IPHC_NH_C)) {
 		*hc06_ptr = hdr->nexthdr;
 		hc06_ptr += 1;
 	}
