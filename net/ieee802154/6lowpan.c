@@ -66,9 +66,6 @@
 
 static bool req_802154_ack;
 
-/* TTL uncompression values */
-static const u8 lowpan_ttl_values[] = {0, 1, 64, 255};
-
 static LIST_HEAD(lowpan_devices);
 
 /*
@@ -480,18 +477,17 @@ static int lowpan_header_create(struct sk_buff *skb,
 	 */
 	switch (hdr->hop_limit) {
 	case 1:
-		iphc0 |= LOWPAN_IPHC_TTL_1;
+		iphc0 |= LOWPAN_IPHC0_HLIM_1;
 		break;
 	case 64:
-		iphc0 |= LOWPAN_IPHC_TTL_64;
+		iphc0 |= LOWPAN_IPHC0_HLIM_64;
 		break;
 	case 255:
-		iphc0 |= LOWPAN_IPHC_TTL_255;
+		iphc0 |= LOWPAN_IPHC0_HLIM_255;
 		break;
 	default:
-		*hc06_ptr = hdr->hop_limit;
-		hc06_ptr += 1;
-		break;
+		set_hc_ptr_data(&hc06_ptr, &hdr->hop_limit,
+				LOWPAN_IPHC0_HLIM_SIZE);
 	}
 
 	/* source address compression */
@@ -912,11 +908,24 @@ lowpan_process_data(struct sk_buff *skb)
 	}
 
 	/* Hop Limit */
-	if ((iphc0 & 0x03) != LOWPAN_IPHC_TTL_I)
-		hdr.hop_limit = lowpan_ttl_values[iphc0 & 0x03];
-	else {
-		if (lowpan_fetch_skb(skb, &(hdr.hop_limit), 1))
-			goto drop;
+	switch (iphc0 & LOWPAN_IPHC0_HLIM_MASK) {
+	case LOWPAN_IPHC0_HLIM_I:
+		err = lowpan_fetch_skb(skb, &hdr.hop_limit,
+				LOWPAN_IPHC0_HLIM_SIZE);
+		if (err < 0)
+			return -EINVAL;
+		break;
+	case LOWPAN_IPHC0_HLIM_1:
+		hdr.hop_limit = 1;
+		break;
+	case LOWPAN_IPHC0_HLIM_64:
+		hdr.hop_limit = 64;
+		break;
+	case LOWPAN_IPHC0_HLIM_255:
+		hdr.hop_limit = 255;
+		break;
+	default:
+		return -EINVAL;
 	}
 
 	/* Extract SAM to the tmp variable */
