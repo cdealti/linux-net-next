@@ -268,4 +268,33 @@ static inline void set_hc_ptr_data(u8 **hc_ptr,
 	*hc_ptr += len;
 }
 
+/*
+ * This function fetch data from skb.
+ * NOTE:
+ *	Don't forget to translate byte order if len > 1!
+ *	This is only necessary if you read the fetched
+ *	data afterwards.
+ * 
+ * Parameters:
+ *	- skb: pointer for destination and increasing.
+ *	- data: destination of data, if NULL we skip data in skb
+ *		without saving it in data buffer.
+ *	- len: len of data.
+ */
+static inline int lowpan_fetch_skb(struct sk_buff *skb, void *data, size_t len)
+{
+	int ret;
+
+	ret = pskb_may_pull(skb, len);
+	if (unlikely(ret < 0))
+		return ret;
+
+	if (data)
+		memcpy(data, skb->data, len);
+	
+	skb_pull(skb, len);
+
+	return 0;
+}
+
 #endif /* __6LOWPAN_H__ */

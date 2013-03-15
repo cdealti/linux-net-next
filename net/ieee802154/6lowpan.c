@@ -290,29 +290,7 @@ lowpan_compress_udp_header(u8 **hc06_ptr, struct sk_buff *skb)
 	*hc06_ptr += 2;
 
 	/* skip the UDP header */
-	skb_pull(skb, sizeof(struct udphdr));
-}
-
-static inline int lowpan_fetch_skb_u8(struct sk_buff *skb, u8 *val)
-{
-	if (unlikely(!pskb_may_pull(skb, 1)))
-		return -EINVAL;
-
-	*val = skb->data[0];
-	skb_pull(skb, 1);
-
-	return 0;
-}
-
-static inline int lowpan_fetch_skb_u16(struct sk_buff *skb, u16 *val)
-{
-	if (unlikely(!pskb_may_pull(skb, 2)))
-		return -EINVAL;
-
-	*val = (skb->data[0] << 8) | skb->data[1];
-	skb_pull(skb, 2);
-
-	return 0;
+	lowpan_fetch_skb(skb, NULL, sizeof(struct udphdr));
 }
 
 static int
@@ -323,7 +301,7 @@ lowpan_uncompress_udp_header(struct sk_buff *skb, struct udphdr *uh)
 	if (!uh)
 		goto err;
 
-	if (lowpan_fetch_skb_u8(skb, &tmp))
+	if (lowpan_fetch_skb(skb, &tmp, 1))
 		goto err;
 
 	if ((tmp & LOWPAN_NHC_UDP_MASK) == LOWPAN_NHC_UDP_ID) {
@@ -332,25 +310,25 @@ lowpan_uncompress_udp_header(struct sk_buff *skb, struct udphdr *uh)
 		case LOWPAN_NHC_UDP_CS_P_00:
 			memcpy(&uh->source, &skb->data[0], 2);
 			memcpy(&uh->dest, &skb->data[2], 2);
-			skb_pull(skb, 4);
+			lowpan_fetch_skb(skb, NULL, 4);
 			break;
 		case LOWPAN_NHC_UDP_CS_P_01:
 			memcpy(&uh->source, &skb->data[0], 2);
 			uh->dest =
 			   skb->data[2] + LOWPAN_NHC_UDP_8BIT_PORT;
-			skb_pull(skb, 3);
+			lowpan_fetch_skb(skb, NULL, 3);
 			break;
 		case LOWPAN_NHC_UDP_CS_P_10:
 			uh->source = skb->data[0] + LOWPAN_NHC_UDP_8BIT_PORT;
 			memcpy(&uh->dest, &skb->data[1], 2);
-			skb_pull(skb, 3);
+			lowpan_fetch_skb(skb, NULL, 3);
 			break;
 		case LOWPAN_NHC_UDP_CS_P_11:
 			uh->source =
 			   LOWPAN_NHC_UDP_4BIT_PORT + (skb->data[0] >> 4);
 			uh->dest =
 			   LOWPAN_NHC_UDP_4BIT_PORT + (skb->data[0] & 0x0f);
-			skb_pull(skb, 1);
+			lowpan_fetch_skb(skb, NULL, 1);
 			break;
 		default:
 			pr_debug("ERROR: unknown UDP format\n");
@@ -363,7 +341,7 @@ lowpan_uncompress_udp_header(struct sk_buff *skb, struct udphdr *uh)
 
 		/* copy checksum */
 		memcpy(&uh->check, &skb->data[0], 2);
-		skb_pull(skb, 2);
+		lowpan_fetch_skb(skb, NULL, 2);
 
 		/* UDP lenght needs to be infered from the lower layers
 		 * here, we obtain the hint from the remaining size of the
@@ -565,7 +543,7 @@ static int lowpan_header_create(struct sk_buff *skb,
 	head[0] = iphc0;
 	head[1] = iphc1;
 
-	skb_pull(skb, sizeof(struct ipv6hdr));
+	lowpan_fetch_skb(skb, NULL, sizeof(struct ipv6hdr));
 	memcpy(skb_push(skb, hc06_ptr - head), head, hc06_ptr - head);
 
 	lowpan_raw_dump_table(__func__, "raw skb data dump", skb->data,
@@ -734,7 +712,7 @@ lowpan_process_data(struct sk_buff *skb)
 	if (skb->len < 2)
 		goto drop;
 
-	if (lowpan_fetch_skb_u8(skb, &iphc0))
+	if (lowpan_fetch_skb(skb, &iphc0, 1))
 		goto drop;
 
 	/* fragments assembling */
@@ -748,9 +726,11 @@ lowpan_process_data(struct sk_buff *skb)
 		u16 len, tag;
 		bool found = false;
 
-		if (lowpan_fetch_skb_u8(skb, &slen) || /* frame length */
-		    lowpan_fetch_skb_u16(skb, &tag))  /* fragment tag */
+		if (lowpan_fetch_skb(skb, &slen, 1) || /* frame length */
+		    lowpan_fetch_skb(skb, &tag, 2))  /* fragment tag */
 			goto drop;
+
+		tag = ntohs(tag);
 
 		/* adds the 3 MSB to the 8 LSB to retrieve the 11 bits length */
 		len = ((iphc0 & 7) << 8) | slen;
@@ -760,7 +740,7 @@ lowpan_process_data(struct sk_buff *skb)
 				 "size of the entire IP packet: %d)",
 				 __func__, tag, len);
 		} else { /* FRAGN */
-			if (lowpan_fetch_skb_u8(skb, &offset))
+			if (lowpan_fetch_skb(skb, &offset, 1))
 				goto unlock_and_drop;
 			pr_debug("%s received a FRAGN packet (tag: %d, "
 				 "size of the entire IP packet: %d, "
@@ -812,7 +792,7 @@ lowpan_process_data(struct sk_buff *skb)
 			skb = frame->skb;
 			kfree(frame);
 
-			if (lowpan_fetch_skb_u8(skb, &iphc0))
+			if (lowpan_fetch_skb(skb, &iphc0, 1))
 				goto drop;
 
 			break;
@@ -825,7 +805,7 @@ lowpan_process_data(struct sk_buff *skb)
 		break;
 	}
 
-	if (lowpan_fetch_skb_u8(skb, &iphc1))
+	if (lowpan_fetch_skb(skb, &iphc1, 1))
 		goto drop;
 
 	_saddr = mac_cb(skb)->sa.hwaddr;
@@ -836,7 +816,7 @@ lowpan_process_data(struct sk_buff *skb)
 	/* another if the CID flag is set */
 	if (iphc1 & LOWPAN_IPHC_CID) {
 		pr_debug("CID flag is set, increase header with one\n");
-		if (lowpan_fetch_skb_u8(skb, &num_context))
+		if (lowpan_fetch_skb(skb, &num_context, 1))
 			goto drop;
 	}
 
@@ -849,7 +829,7 @@ lowpan_process_data(struct sk_buff *skb)
 	 * ECN + DSCP + 4-bit Pad + Flow Label (4 bytes)
 	 */
 	case 0: /* 00b */
-		if (lowpan_fetch_skb_u8(skb, &tmp))
+		if (lowpan_fetch_skb(skb, &tmp, 1))
 			goto drop;
 
 		memcpy(&hdr.flow_lbl, &skb->data[0], 3);
@@ -863,7 +843,7 @@ lowpan_process_data(struct sk_buff *skb)
 	 * ECN + DSCP (1 byte), Flow Label is elided
 	 */
 	case 1: /* 10b */
-		if (lowpan_fetch_skb_u8(skb, &tmp))
+		if (lowpan_fetch_skb(skb, &tmp, 1))
 			goto drop;
 
 		hdr.priority = ((tmp >> 2) & 0x0f);
@@ -876,7 +856,7 @@ lowpan_process_data(struct sk_buff *skb)
 	 * ECN + 2-bit Pad + Flow Label (3 bytes), DSCP is elided
 	 */
 	case 2: /* 01b */
-		if (lowpan_fetch_skb_u8(skb, &tmp))
+		if (lowpan_fetch_skb(skb, &tmp, 1))
 			goto drop;
 
 		hdr.flow_lbl[0] = (skb->data[0] & 0x0F) | ((tmp >> 2) & 0x30);
@@ -897,7 +877,7 @@ lowpan_process_data(struct sk_buff *skb)
 	/* Next Header */
 	if ((iphc0 & LOWPAN_IPHC_NH_C) == 0) {
 		/* Next header is carried inline */
-		if (lowpan_fetch_skb_u8(skb, &(hdr.nexthdr)))
+		if (lowpan_fetch_skb(skb, &(hdr.nexthdr), 1))
 			goto drop;
 
 		pr_debug("NH flag is set, next header carried inline: %02x\n",
@@ -908,7 +888,7 @@ lowpan_process_data(struct sk_buff *skb)
 	if ((iphc0 & 0x03) != LOWPAN_IPHC_TTL_I)
 		hdr.hop_limit = lowpan_ttl_values[iphc0 & 0x03];
 	else {
-		if (lowpan_fetch_skb_u8(skb, &(hdr.hop_limit)))
+		if (lowpan_fetch_skb(skb, &(hdr.hop_limit), 1))
 			goto drop;
 	}
 
@@ -935,7 +915,7 @@ lowpan_process_data(struct sk_buff *skb)
 
 			pr_debug("dest: non context-based mcast compression\n");
 			if (0 < tmp && tmp < 3) {
-				if (lowpan_fetch_skb_u8(skb, &prefix[1]))
+				if (lowpan_fetch_skb(skb, &prefix[1], 1))
 					goto drop;
 			}
 
@@ -1239,7 +1219,7 @@ static int lowpan_rcv(struct sk_buff *skb, struct net_device *dev,
 		local_skb->pkt_type = PACKET_HOST;
 
 		/* Pull off the 1-byte of 6lowpan header. */
-		skb_pull(local_skb, 1);
+		lowpan_fetch_skb(local_skb, NULL, 1);
 		skb_reset_network_header(local_skb);
 		skb_set_transport_header(local_skb, sizeof(struct ipv6hdr));
 
