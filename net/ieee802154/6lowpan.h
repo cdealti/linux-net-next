@@ -251,4 +251,21 @@
 					dest = 16 bit inline */
 #define LOWPAN_NHC_UDP_CS_P_11	0xF3 /* source & dest = 0xF0B + 4bit inline */
 
+
+/*
+ * This function sets a data to a pointer
+ * and increase the current pointer.
+ *
+ * Parameters:
+ *	- hc_ptr: pointer for destination and increasing.
+ *	- data: source data.
+ *	- len: len of data.
+ */
+static inline void set_hc_ptr_data(u8 **hc_ptr,
+		const void *data, size_t len)
+{
+	memcpy(*hc_ptr, data, len);
+	*hc_ptr += len;
+}
+
 #endif /* __6LOWPAN_H__ */
