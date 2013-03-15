@@ -1109,8 +1109,8 @@ lowpan_process_data(struct sk_buff *skb)
 		return -EINVAL;
 	}
 
-	err = lowpan_uncompress_addr(skb, 0, &hdr.saddr,
-			iphc1, mac_cb(skb)->sa.hwaddr);
+	err = lowpan_uncompress_addr(skb, LOWPAN_IPHC1_ADDR_C_IS_SRC,
+			&hdr.saddr, iphc1, mac_cb(skb)->sa.hwaddr);
 	if (err < 0)
 		goto drop;
 
@@ -1139,8 +1139,8 @@ lowpan_process_data(struct sk_buff *skb)
 		/*
 		 * DAM
 		 */
-		err = lowpan_uncompress_addr(skb, 1, &hdr.daddr,
-				iphc1, mac_cb(skb)->da.hwaddr);
+		err = lowpan_uncompress_addr(skb, LOWPAN_IPHC1_ADDR_C_IS_DEST,
+				&hdr.daddr, iphc1, mac_cb(skb)->da.hwaddr);
 		if (err < 0)
 			goto drop;
 	}
