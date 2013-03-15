@@ -442,7 +442,7 @@ static int lowpan_header_create(struct sk_buff *skb,
 	     (hdr->flow_lbl[1] == 0) && (hdr->flow_lbl[2] == 0)) {
 		/* flow label can be compressed */
 		iphc0 |= LOWPAN_IPHC_FL_C;
-		if ((hdr->priority == 0) &&
+		if (((hdr->priority & 0xC) == 0) &&
 		   ((hdr->flow_lbl[0] & 0xF0) == 0)) {
 			/* compress (elide) all */
 			iphc0 |= LOWPAN_IPHC_TC_C;
@@ -453,7 +453,7 @@ static int lowpan_header_create(struct sk_buff *skb,
 		}
 	} else {
 		/* Flow label cannot be compressed */
-		if ((hdr->priority == 0) &&
+		if (((hdr->priority & 0xC) == 0) &&
 		   ((hdr->flow_lbl[0] & 0xF0) == 0)) {
 			/* compress only traffic class */
 			iphc0 |= LOWPAN_IPHC_TC_C;
