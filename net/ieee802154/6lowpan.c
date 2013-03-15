@@ -465,10 +465,9 @@ static int lowpan_header_create(struct sk_buff *skb,
 	/* NOTE: payload length is always compressed */
 
 	/* Next Header is compress if UDP */
-	if (hdr->nexthdr == UIP_PROTO_UDP)
+	if (hdr->nexthdr == UIP_PROTO_UDP) {
 		iphc0 |= LOWPAN_IPHC_NH_C;
-
-	if (!(iphc0 & LOWPAN_IPHC_NH_C)) {
+	} else {
 		*hc06_ptr = hdr->nexthdr;
 		hc06_ptr += 1;
 	}
