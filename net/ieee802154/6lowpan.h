@@ -432,6 +432,12 @@ static inline void lowpan_set_tc_flbl_to_ipv6(struct ipv6hdr *hdr,
 #define LOWPAN_FRAG_SIZE	88
 
 /*
+ * IPHC0 + IPHC1 + TF + NH + HLIM + CID + SAM + DAM + (UDP) 
+ *   1   +   1   + 4  + 1  +  1   +  1  + 16  + 16  + 7
+ */ 
+#define LOWPAN_MAX_HEADER_LENGTH 48
+
+/*
  * Values of fields within the IPHC encoding first byte
  * (C stands for compressed and I for inline)
  */

@@ -369,7 +369,7 @@ static int lowpan_header_create(struct sk_buff *skb,
 	struct ipv6hdr *hdr;
 	const u8 *saddr = _saddr;
 	const u8 *daddr = _daddr;
-	u8 head[100];
+	u8 head[LOWPAN_MAX_HEADER_LENGTH];
 	struct ieee802154_addr sa, da;
 
 	/* TODO:
