@@ -423,8 +423,8 @@ static int lowpan_header_create(struct sk_buff *skb,
 	u8 iphc0, iphc1, *hc06_ptr;
 	u32 tc_flbl; 
 	struct ipv6hdr *hdr;
-	const u8 *saddr = _saddr;
-	const u8 *daddr = _daddr;
+	const u8 *saddr_layer = dev->dev_addr;
+	const u8 *daddr_layer = _daddr;
 	u8 head[LOWPAN_MAX_HEADER_LENGTH];
 	struct ieee802154_addr sa, da;
 
@@ -444,10 +444,7 @@ static int lowpan_header_create(struct sk_buff *skb,
 	lowpan_raw_dump_table(__func__, "raw skb network header dump",
 		skb_network_header(skb), sizeof(struct ipv6hdr));
 
-	if (!saddr)
-		saddr = dev->dev_addr;
-
-	lowpan_raw_dump_inline(__func__, "saddr", (unsigned char *)saddr, 8);
+	lowpan_raw_dump_inline(__func__, "saddr", saddr_layer, IEEE802154_ADDR_LEN);
 
 	/*
 	 * As we copy some bit-length fields, in the IPHC encoding bytes,
@@ -460,7 +457,7 @@ static int lowpan_header_create(struct sk_buff *skb,
 
 	/* TODO: context lookup */
 
-	lowpan_raw_dump_inline(__func__, "daddr", (unsigned char *)daddr, 8);
+	lowpan_raw_dump_inline(__func__, "daddr", daddr_layer, IEEE802154_ADDR_LEN);
 
 	/*
 	 * Get the 28 bit tc and tc_flbl value from ipv6hdr.
@@ -578,7 +575,7 @@ static int lowpan_header_create(struct sk_buff *skb,
 	 * is compressed.
 	 */
 	lowpan_compress_addr(&hc06_ptr, LOWPAN_IPHC1_ADDR_C_IS_SRC, 
-			&hdr->saddr, &iphc1, saddr);
+			&hdr->saddr, &iphc1, saddr_layer);
 
 		/*
 	 * This part of this function determine the compression of
@@ -633,7 +630,7 @@ static int lowpan_header_create(struct sk_buff *skb,
 		 * 
 		 */
 		lowpan_compress_addr(&hc06_ptr, LOWPAN_IPHC1_ADDR_C_IS_DEST,
-				&hdr->daddr, &iphc1, daddr);
+				&hdr->daddr, &iphc1, daddr_layer);
 	}
 
 	/* UDP header compression */
@@ -667,19 +664,19 @@ static int lowpan_header_create(struct sk_buff *skb,
 		sa.addr_type = IEEE802154_ADDR_LONG;
 		sa.pan_id = ieee802154_mlme_ops(dev)->get_pan_id(dev);
 
-		memcpy(&(sa.hwaddr), saddr, 8);
+		memcpy(&(sa.hwaddr), saddr_layer, IEEE802154_ADDR_LEN);
 		/* intra-PAN communications */
 		da.pan_id = ieee802154_mlme_ops(dev)->get_pan_id(dev);
 
 		/* if the destination address is the broadcast address, use the
 		 * corresponding short address
 		 */
-		if (lowpan_is_addr_broadcast(daddr)) {
+		if (lowpan_is_addr_broadcast(daddr_layer)) {
 			da.addr_type = IEEE802154_ADDR_SHORT;
 			da.short_addr = IEEE802154_ADDR_BROADCAST;
 		} else {
 			da.addr_type = IEEE802154_ADDR_LONG;
-			memcpy(&(da.hwaddr), daddr, 8);
+			memcpy(&(da.hwaddr), daddr_layer, IEEE802154_ADDR_LEN);
 
 			/* request acknowledgment */
 			if (req_802154_ack)
@@ -904,7 +901,6 @@ lowpan_process_data(struct sk_buff *skb)
 	struct ipv6hdr hdr = {};
 	u32 tc_flbl;
 	u8 iphc0, iphc1, num_context = 0;
-	u8 *_saddr, *_daddr;
 	int err;
 
 	lowpan_raw_dump_table(__func__, "raw skb data dump", skb->data,
@@ -1008,9 +1004,6 @@ lowpan_process_data(struct sk_buff *skb)
 
 	if (lowpan_fetch_skb(skb, &iphc1, 1))
 		goto drop;
-
-	_saddr = mac_cb(skb)->sa.hwaddr;
-	_daddr = mac_cb(skb)->da.hwaddr;
 
 	pr_debug("iphc0 = %02x, iphc1 = %02x\n", iphc0, iphc1);
 
