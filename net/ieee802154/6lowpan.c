@@ -901,7 +901,7 @@ lowpan_process_data(struct sk_buff *skb)
 
 
 	/* Next Header */
-	if ((iphc0 & LOWPAN_IPHC0_NH_C) == 0) {
+	if (!(iphc0 & LOWPAN_IPHC0_NH_C)) {
 		/* Next header is carried inline */
 		if (lowpan_fetch_skb(skb, &(hdr.nexthdr),
 					LOWPAN_IPHC0_NH_SIZE))
