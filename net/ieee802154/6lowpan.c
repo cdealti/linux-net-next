@@ -141,14 +141,15 @@ static inline void lowpan_address_flip(u8 *src, u8 *dest)
 /* list of all 6lowpan devices, uses for package delivering */
 /* print data in line */
 static inline void lowpan_raw_dump_inline(const char *caller, char *msg,
-				   unsigned char *buf, int len)
+		const void *buf, int len)
 {
-#ifdef DEBUG
+#ifndef DEBUG
+	return;
+#endif
 	if (msg)
 		pr_debug("(%s) %s: ", caller, msg);
 	print_hex_dump(KERN_DEBUG, "", DUMP_PREFIX_NONE,
 		       16, 1, buf, len, false);
-#endif /* DEBUG */
 }
 
 /*
@@ -159,14 +160,15 @@ static inline void lowpan_raw_dump_inline(const char *caller, char *msg,
  * ...
  */
 static inline void lowpan_raw_dump_table(const char *caller, char *msg,
-				   unsigned char *buf, int len)
+		const void *buf, int len)
 {
-#ifdef DEBUG
+#ifndef DEBUG
+	return;
+#endif
 	if (msg)
 		pr_debug("(%s) %s:\n", caller, msg);
 	print_hex_dump(KERN_DEBUG, "\t", DUMP_PREFIX_OFFSET,
 		       16, 1, buf, len, false);
-#endif /* DEBUG */
 }
 
 static u8
