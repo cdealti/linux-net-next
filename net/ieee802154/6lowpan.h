@@ -170,7 +170,242 @@
 #define lowpan_is_ipv6_dscp_zero(a)		\
 	((!((a)->priority & 0xC)) &&		\
 	 (!((a)->flow_lbl[0] & 0x0F))) 
+/*
+ * This part generates a tc_flbl value to handle it 
+ * with a ipv6hdr and lowpan_hdr.
+ *
+ * This is the tc_flbl it's similar how ipv6hdr stores
+ * this value. But we don't a have a good access to this,
+ * because ipv6hdr struct split it in two elements.
+ *
+ *  MSB                                          LSB	
+ *  27...........8   7   6   5   4   3   2   1   0
+ * +---+---+---+---+---+---+---+---+---+---+---+---+
+ * |  FLOW LABEL   |         DSCP          |  ECN  |
+ * +---+---+---+---+---+---+---+---+---+---+---+---+
+ * \_______________________________|_______________/
+ *             flow_lbl:24             priority:4
+ *
+ * Construct the 28 bit width tc_flbl value from a ipv6 hdr.
+ */
 
+#define LOWPAN_IPV6_TC_FLBL_PRIORITY_MASK	0x000000F
+#define LOWPAN_IPV6_TC_FLBL_PRIORITY_SHIFT	0
+
+#define LOWPAN_IPV6_TC_FLBL_FLOWLBL_SHIFT	4
+#define LOWPAN_IPV6_TC_FLBL_FLOWLBL_MASK	0xFFFFFF0
+
+#define LOWPAN_IPV6_FLOW_LBL_SIZE		3
+
+#define lowpan_get_tc_flbl_from_ipv6(a)					\
+	((a->priority << LOWPAN_IPV6_TC_FLBL_PRIORITY_SHIFT) |		\
+	 (*((u32 *)a->flow_lbl) << LOWPAN_IPV6_TC_FLBL_FLOWLBL_SHIFT)) \
+
+/*
+ * The other way, fill the ipv6hdr from a tc_flbl value. 
+ */
+static inline void lowpan_set_tc_flbl_to_ipv6(struct ipv6hdr *hdr,
+		const u32 flbl)
+{
+	u32 tmp;
+
+	hdr->priority = ((flbl & LOWPAN_IPV6_TC_FLBL_PRIORITY_MASK)
+			>> LOWPAN_IPV6_TC_FLBL_PRIORITY_SHIFT);
+	tmp = ((flbl & LOWPAN_IPV6_TC_FLBL_FLOWLBL_MASK)
+			>> LOWPAN_IPV6_TC_FLBL_FLOWLBL_SHIFT);
+	memcpy(hdr->flow_lbl, &tmp, LOWPAN_IPV6_FLOW_LBL_SIZE);
+}
+
+/*
+ * These macros handles to grep FLOW LABEL, DSCP and ECN from a
+ * ipv6hdr tc_flbl value.
+ */
+#define LOWPAN_IPV6_ECN_MASK	0x0000003
+#define LOWPAN_IPV6_ECN_SHIFT	0
+
+#define lowpan_get_ecn_from_ipv6_tc_flbl(a)				\
+	((a & LOWPAN_IPV6_ECN_MASK) >> LOWPAN_IPV6_ECN_SHIFT)
+
+#define LOWPAN_IPV6_DSCP_MASK	0x00000FC
+#define LOWPAN_IPV6_DSCP_SHIFT	2
+
+#define lowpan_get_dscp_from_ipv6_tc_flbl(a)				\
+	((a & LOWPAN_IPV6_DSCP_MASK) >> LOWPAN_IPV6_DSCP_SHIFT)
+
+#define LOWPAN_IPV6_FLBL_MASK	0xFFFFF00
+#define LOWPAN_IPV6_FLBL_SHIFT	8
+
+#define lowpan_get_flbl_from_ipv6_tc_flbl(a)				\
+	((a & LOWPAN_IPV6_FLBL_MASK) >> LOWPAN_IPV6_FLBL_SHIFT)
+
+/*
+ * Values for 6lowpan header traffic class
+ * and flow label.
+ *
+ * TIFI means:
+ * Traffic class inline and flow label inline.
+ *
+ * TCFI means:
+ * Traffic class compressed and flow label inline.
+ *
+ * TIFC means:
+ * Traffic class inline and flow label compressed.
+ *
+ * This part construct a inline data value for the case
+ * LOWPAN_IPHC0_TIFI:
+ *
+ *  MSB                                          LSB	
+ *  31  30  29......24  23  22  21  20  19.......0
+ * +---+---+---+---+---+---+---+---+---+---+---+---+
+ * |  ECN  |   DSCP    |      rsv      |FLOW LABEL |
+ * +---+---+---+---+---+---+---+---+---+---+---+---+
+ *
+ */
+#define LOWPAN_IPHC0_TIFI_ECN_MASK	0xC0000000
+#define LOWPAN_IPHC0_TIFI_ECN_SHIFT	30
+
+#define LOWPAN_IPHC0_TIFI_DSCP_MASK	0x3F000000
+#define LOWPAN_IPHC0_TIFI_DSCP_SHIFT	24
+
+#define LOWPAN_IPHC0_TIFI_FLBL_MASK	0x000FFFFF
+#define LOWPAN_IPHC0_TIFI_FLBL_SHIFT	0
+
+#define LOWPAN_IPHC0_TIFI_MASK		0xFF0FFFFF
+#define LOWPAN_IPHC0_TIFI_SIZE		4
+
+/*
+ * Construct the 6lowpan inline data for tifi.
+ */
+#define lowpan_get_tifi_inline_value(a)				\
+	(((lowpan_get_ecn_from_ipv6_tc_flbl(a) <<		\
+	  LOWPAN_IPHC0_TIFI_ECN_SHIFT) |			\
+	 (lowpan_get_dscp_from_ipv6_tc_flbl(a) <<		\
+	  LOWPAN_IPHC0_TIFI_DSCP_SHIFT) |			\
+	 (lowpan_get_flbl_from_ipv6_tc_flbl(a) <<		\
+	  LOWPAN_IPHC0_TIFI_FLBL_SHIFT)) &			\
+	 LOWPAN_IPHC0_TIFI_MASK)
+
+/*
+ *  These macros is to generate the tc_flbl ipv6
+ *  from a tifi lowpan inline data.
+ */
+#define lowpan_get_ecn_tifi_from_lowpan(tc_flbl)		\
+	((tc_flbl & LOWPAN_IPHC0_TIFI_ECN_MASK) >>		\
+	  LOWPAN_IPHC0_TIFI_ECN_SHIFT)
+
+#define lowpan_get_dscp_tifi_from_lowpan(tc_flbl)		\
+	((tc_flbl & LOWPAN_IPHC0_TIFI_DSCP_MASK) >>		\
+	  LOWPAN_IPHC0_TIFI_DSCP_SHIFT)
+
+#define lowpan_get_flbl_tifi_from_lowpan(tc_flbl)		\
+	((tc_flbl & LOWPAN_IPHC0_TIFI_FLBL_MASK) >>		\
+	  LOWPAN_IPHC0_TIFI_FLBL_SHIFT)
+
+#define lowpan_get_tc_flbl_tifi_from_lowpan(tc_flbl)		\
+	((lowpan_get_ecn_tifi_from_lowpan(tc_flbl) <<		\
+	  LOWPAN_IPV6_ECN_SHIFT) |				\
+	 (lowpan_get_dscp_tifi_from_lowpan(tc_flbl) <<		\
+	  LOWPAN_IPV6_DSCP_SHIFT) |				\
+	 (lowpan_get_flbl_tifi_from_lowpan(tc_flbl) <<		\
+	  LOWPAN_IPV6_FLBL_SHIFT))
+
+/*
+ * Values for 6lowpan header traffic class
+ * and flow label.
+ *
+ * Case for LOWPAN_IPHC0_TCFI
+ *
+ *  MSB                                          LSB
+ *  23  22  21  20  19...........................0
+ * +---+---+---+---+---+---+---+---+---+---+---+---+
+ * |  ECN  |  rsv  |          FLOW LABEL           |
+ * +---+---+---+---+---+---+---+---+---+---+---+---+
+ *
+ */
+#define LOWPAN_IPHC0_TCFI_ECN_MASK	0xC00000
+#define LOWPAN_IPHC0_TCFI_ECN_SHIFT	22
+
+#define LOWPAN_IPHC0_TCFI_FLBL_MASK	0x0FFFFF
+#define LOWPAN_IPHC0_TCFI_FLBL_SHIFT	0
+
+#define LOWPAN_IPHC0_TCFI_MASK		0xCFFFFF
+#define LOWPAN_IPHC0_TCFI_SIZE		3
+
+/*
+ * Construct the 6lowpan inline data for tcfi.
+ */
+#define lowpan_get_tcfi_inline_value(a)				\
+	(((lowpan_get_ecn_from_ipv6_tc_flbl(a) <<		\
+	   LOWPAN_IPHC0_TCFI_ECN_SHIFT) |			\
+	 (lowpan_get_flbl_from_ipv6_tc_flbl(a) <<		\
+	  LOWPAN_IPHC0_TCFI_FLBL_SHIFT)) &			\
+	 LOWPAN_IPHC0_TCFI_MASK)
+
+/*
+ *  These macros is to generate the tc_flbl ipv6
+ *  from a tcfi lowpan inline data.
+ */
+#define lowpan_get_ecn_tcfi_from_lowpan(tc_flbl)		\
+	((tc_flbl & LOWPAN_IPHC0_TCFI_ECN_MASK) >>		\
+	  LOWPAN_IPHC0_TCFI_ECN_SHIFT)
+
+#define lowpan_get_flbl_tcfi_from_lowpan(tc_flbl)		\
+	((tc_flbl & LOWPAN_IPHC0_TCFI_FLBL_MASK) >>		\
+	  LOWPAN_IPHC0_TCFI_FLBL_SHIFT)
+
+#define lowpan_get_tc_flbl_tcfi_from_lowpan(tc_flbl)		\
+	((lowpan_get_ecn_tcfi_from_lowpan(tc_flbl) <<		\
+	  LOWPAN_IPV6_ECN_SHIFT) |				\
+	 (lowpan_get_flbl_tcfi_from_lowpan(tc_flbl) <<		\
+	  LOWPAN_IPV6_FLBL_SHIFT))
+/*
+ * Values for 6lowpan header traffic class
+ * and flow label.
+ *
+ * Case for LOWPAN_IPHC0_TIFC
+ *
+ *  MSB                         LSB
+ *   7   6   5   4   3   2   1   0
+ * +---+---+---+---+---+---+---+---+
+ * |  ECN  |          DSCP         |
+ * +---+---+---+---+---+---+---+---+
+ */
+#define LOWPAN_IPHC0_TIFC_ECN_MASK	0xC0
+#define LOWPAN_IPHC0_TIFC_ECN_SHIFT	6
+
+#define LOWPAN_IPHC0_TIFC_DSCP_MASK	0x3F
+#define LOWPAN_IPHC0_TIFC_DSCP_SHIFT	0
+
+#define LOWPAN_IPHC0_TIFC_MASK		0xFF
+#define LOWPAN_IPHC0_TIFC_SIZE		1
+
+/*
+ * Construct the 6lowpan inline data for tifc.
+ */
+#define lowpan_get_tifc_inline_value(a)				\
+	(((lowpan_get_ecn_from_ipv6_tc_flbl(a) <<		\
+	  LOWPAN_IPHC0_TIFC_ECN_SHIFT) |			\
+	 (lowpan_get_dscp_from_ipv6_tc_flbl(a) <<		\
+	  LOWPAN_IPHC0_TIFC_DSCP_SHIFT)) &			\
+	 LOWPAN_IPHC0_TIFC_MASK)
+
+/*
+ *  These macros is to generate the tc_flbl ipv6
+ *  from a tifc lowpan inline data.
+ */
+#define lowpan_get_ecn_tifc_from_lowpan(tc_flbl)		\
+	((tc_flbl & LOWPAN_IPHC0_TIFC_ECN_MASK) >>		\
+	  LOWPAN_IPHC0_TIFC_ECN_SHIFT)
+
+#define lowpan_get_dscp_tifc_from_lowpan(tc_flbl)		\
+	((tc_flbl & LOWPAN_IPHC0_TIFC_DSCP_MASK) >>		\
+	  LOWPAN_IPHC0_TIFC_DSCP_SHIFT)
+
+#define lowpan_get_tc_flbl_tifc_from_lowpan(tc_flbl)		\
+	((lowpan_get_ecn_tifc_from_lowpan(tc_flbl) <<		\
+	  LOWPAN_IPV6_ECN_SHIFT) |				\
+	 (lowpan_get_dscp_tifc_from_lowpan(tc_flbl) <<		\
+	  LOWPAN_IPV6_DSCP_SHIFT))
 
 #define LOWPAN_DISPATCH_IPV6	0x41 /* 01000001 = 65 */
 #define LOWPAN_DISPATCH_HC1	0x42 /* 01000010 = 66 */
@@ -200,10 +435,13 @@
  * Values of fields within the IPHC encoding first byte
  * (C stands for compressed and I for inline)
  */
-#define LOWPAN_IPHC_TF		0x18
+#define LOWPAN_IPHC0_TF_MASK	0x18
+#define LOWPAN_IPHC0_TF_SHIFT	3
+#define LOWPAN_IPHC0_TIFI	(0 << LOWPAN_IPHC0_TF_SHIFT)
+#define LOWPAN_IPHC0_TCFI	(1 << LOWPAN_IPHC0_TF_SHIFT)
+#define LOWPAN_IPHC0_TIFC	(2 << LOWPAN_IPHC0_TF_SHIFT)
+#define LOWPAN_IPHC0_TCFC	(3 << LOWPAN_IPHC0_TF_SHIFT)
 
-#define LOWPAN_IPHC_FL_C	0x10
-#define LOWPAN_IPHC_TC_C	0x08
 #define LOWPAN_IPHC_NH_C	0x04
 #define LOWPAN_IPHC_TTL_1	0x01
 #define LOWPAN_IPHC_TTL_64	0x02

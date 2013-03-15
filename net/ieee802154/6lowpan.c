@@ -364,7 +364,8 @@ static int lowpan_header_create(struct sk_buff *skb,
 			   unsigned short type, const void *_daddr,
 			   const void *_saddr, unsigned int len)
 {
-	u8 tmp, iphc0, iphc1, *hc06_ptr;
+	u8 iphc0, iphc1, *hc06_ptr;
+	u32 tc_flbl; 
 	struct ipv6hdr *hdr;
 	const u8 *saddr = _saddr;
 	const u8 *daddr = _daddr;
@@ -406,43 +407,60 @@ static int lowpan_header_create(struct sk_buff *skb,
 	lowpan_raw_dump_inline(__func__, "daddr", (unsigned char *)daddr, 8);
 
 	/*
-	 * Traffic class, flow label
-	 * If flow label is 0, compress it. If traffic class is 0, compress it
-	 * We have to process both in the same time as the offset of traffic
-	 * class depends on the presence of version and flow label
-	 */
-
-	/* hc06 format of TC is ECN | DSCP , original one is DSCP | ECN */
-	tmp = (hdr->priority << 4) | (hdr->flow_lbl[0] >> 4);
-	tmp = ((tmp & 0x03) << 6) | (tmp >> 2);
-
+	 * Get the 28 bit tc and tc_flbl value from ipv6hdr.
+	 * This looks like:
+	 * MSB						LSB
+	 * +---+---+---+---+---+---+---+---+---+---+---+---+
+	 * |  FLOW LABEL   |         DSCP          |  ECN  |
+	 * +---+---+---+---+---+---+---+---+---+---+---+---+
+	 *  27...........8   7                   2   1   0
+	 */ 
+	tc_flbl = lowpan_get_tc_flbl_from_ipv6(hdr);
 	if (lowpan_is_ipv6_flow_lbl_zero(hdr)) {
-		/* flow label can be compressed */
-		iphc0 |= LOWPAN_IPHC_FL_C;
+		/*
+		 * We can compress flow_lbl here.
+		 */
 		if (lowpan_is_ipv6_dscp_zero(hdr)) {
-			/* compress (elide) all */
-			iphc0 |= LOWPAN_IPHC_TC_C;
+			/*
+			 * Compress all, do not any inline data.
+			 *
+			 * TODO:
+			 * Check what's going on here with the ECN?
+			 * We don't check if this is zero here.
+			 * Can we elide it?
+			 */
+			iphc0 |= LOWPAN_IPHC0_TCFC;
 		} else {
-			/* compress only the flow label */
-			*hc06_ptr = tmp;
-			hc06_ptr += 1;
+			/*
+			 * Compress flow_lbl only, we send only
+			 * DSCP and ECN.
+			 */
+			iphc0 |= LOWPAN_IPHC0_TIFC;
+			
+			tc_flbl = lowpan_get_tifc_inline_value(tc_flbl);
+			set_hc_ptr_data(&hc06_ptr, &tc_flbl, LOWPAN_IPHC0_TIFC_SIZE);
 		}
 	} else {
-		/* Flow label cannot be compressed */
+		/*
+		 * We can't compress the flow_lbl here.
+		 */
 		if (lowpan_is_ipv6_dscp_zero(hdr)) {
-			/* compress only traffic class */
-			iphc0 |= LOWPAN_IPHC_TC_C;
-			*hc06_ptr = (tmp & 0xc0) | (hdr->flow_lbl[0] & 0x0F);
-			memcpy(hc06_ptr + 1, &hdr->flow_lbl[1], 2);
-			hc06_ptr += 3;
+			/*
+			 * Do only flow_lbl inline with ECN bits.
+			 */
+			iphc0 |= LOWPAN_IPHC0_TCFI;
+			
+			tc_flbl = lowpan_get_tcfi_inline_value(tc_flbl);
+			set_hc_ptr_data(&hc06_ptr, &tc_flbl, LOWPAN_IPHC0_TCFI_SIZE);
 		} else {
-			/* compress nothing */
-			memcpy(hc06_ptr, &hdr, 4);
-			/* replace the top byte with new ECN | DSCP format */
-			*hc06_ptr = tmp;
-			hc06_ptr += 4;
+			/*
+			 * Do all inline, traffic class and flow_lbl.
+			 */
+			tc_flbl = lowpan_get_tifi_inline_value(tc_flbl);
+			set_hc_ptr_data(&hc06_ptr, &tc_flbl, LOWPAN_IPHC0_TIFI_SIZE);
 		}
 	}
+
 
 	/* NOTE: payload length is always compressed */
 
@@ -702,6 +720,7 @@ static int
 lowpan_process_data(struct sk_buff *skb)
 {
 	struct ipv6hdr hdr = {};
+	u32 tc_flbl;
 	u8 tmp, iphc0, iphc1, num_context = 0;
 	u8 *_saddr, *_daddr;
 	int err;
@@ -821,58 +840,67 @@ lowpan_process_data(struct sk_buff *skb)
 	}
 
 	hdr.version = 6;
-
-	/* Traffic Class and Flow Label */
-	switch ((iphc0 & LOWPAN_IPHC_TF) >> 3) {
+	
 	/*
-	 * Traffic Class and FLow Label carried in-line
-	 * ECN + DSCP + 4-bit Pad + Flow Label (4 bytes)
+	 * Handle traffic class and flow label
+	 * here.
 	 */
-	case 0: /* 00b */
-		if (lowpan_fetch_skb(skb, &tmp, 1))
+	switch (iphc0 & LOWPAN_IPHC0_TF_MASK) {
+	/*
+	 * Traffic class and flow label inline.
+	 */
+	case LOWPAN_IPHC0_TIFI:
+		/*
+		 * Fetch inline data.
+		 */
+		err = lowpan_fetch_skb(skb, &tc_flbl, LOWPAN_IPHC0_TIFI_SIZE);
+		if (err < 0)
 			goto drop;
 
-		memcpy(&hdr.flow_lbl, &skb->data[0], 3);
-		skb_pull(skb, 3);
-		hdr.priority = ((tmp >> 2) & 0x0f);
-		hdr.flow_lbl[0] = ((tmp >> 2) & 0x30) | (tmp << 6) |
-					(hdr.flow_lbl[0] & 0x0f);
+		/*
+		 * Get the 28 bit width tc and flowlbl value for ipv6 hdr.
+		 */
+		tc_flbl = lowpan_get_tc_flbl_tifi_from_lowpan(tc_flbl);
+		/*
+		 * Set this tc_flbl to the ipv6, this is splitted in
+		 * two elements, priority and flow_lbl.
+		 */
+		lowpan_set_tc_flbl_to_ipv6(&hdr, tc_flbl);
 		break;
 	/*
-	 * Traffic class carried in-line
-	 * ECN + DSCP (1 byte), Flow Label is elided
+	 * DSCP class compressed.
+	 * Flow label and ECN is inline.
 	 */
-	case 1: /* 10b */
-		if (lowpan_fetch_skb(skb, &tmp, 1))
+	case LOWPAN_IPHC0_TCFI:
+		err = lowpan_fetch_skb(skb, &tc_flbl, LOWPAN_IPHC0_TCFI_SIZE);
+		if (err < 0)
 			goto drop;
 
-		hdr.priority = ((tmp >> 2) & 0x0f);
-		hdr.flow_lbl[0] = ((tmp << 6) & 0xC0) | ((tmp >> 2) & 0x30);
-		hdr.flow_lbl[1] = 0;
-		hdr.flow_lbl[2] = 0;
+		tc_flbl = lowpan_get_tc_flbl_tcfi_from_lowpan(tc_flbl);
+		lowpan_set_tc_flbl_to_ipv6(&hdr, tc_flbl);
 		break;
 	/*
-	 * Flow Label carried in-line
-	 * ECN + 2-bit Pad + Flow Label (3 bytes), DSCP is elided
+	 * Traffic class inline.
+	 * Flow label compressed.
 	 */
-	case 2: /* 01b */
-		if (lowpan_fetch_skb(skb, &tmp, 1))
+	case LOWPAN_IPHC0_TIFC:
+		err = lowpan_fetch_skb(skb, &tc_flbl, LOWPAN_IPHC0_TIFC_SIZE);
+		if (err < 0)
 			goto drop;
 
-		hdr.flow_lbl[0] = (skb->data[0] & 0x0F) | ((tmp >> 2) & 0x30);
-		memcpy(&hdr.flow_lbl[1], &skb->data[0], 2);
-		skb_pull(skb, 2);
+		tc_flbl = lowpan_get_tc_flbl_tifc_from_lowpan(tc_flbl);
+		lowpan_set_tc_flbl_to_ipv6(&hdr, tc_flbl);
 		break;
-	/* Traffic Class and Flow Label are elided */
-	case 3: /* 11b */
-		hdr.priority = 0;
-		hdr.flow_lbl[0] = 0;
-		hdr.flow_lbl[1] = 0;
-		hdr.flow_lbl[2] = 0;
+	/*
+	 * All data is compressed, so doing nothing,
+	 * because ipv6hdr is filled with zeros.
+	 */
+	case LOWPAN_IPHC0_TCFC:
 		break;
 	default:
-		break;
+		goto drop;
 	}
+
 
 	/* Next Header */
 	if ((iphc0 & LOWPAN_IPHC_NH_C) == 0) {
