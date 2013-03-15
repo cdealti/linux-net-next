@@ -51,7 +51,7 @@ struct at86rf230_local {
 	struct ieee802154_dev *dev;
 
 	spinlock_t lock;
-	bool irq_disabled;
+	bool irq_busy;
 	bool is_tx;
 };
 
@@ -544,7 +544,7 @@ at86rf230_xmit(struct ieee802154_dev *dev, struct sk_buff *skb)
 	unsigned long flags;
 
 	spin_lock(&lp->lock);
-	if  (lp->irq_disabled) {
+	if  (lp->irq_busy) {
 		spin_unlock(&lp->lock);
 		return -EBUSY;
 	}
@@ -658,20 +658,16 @@ static void at86rf230_irqwork(struct work_struct *work)
 	}
 
 	spin_lock_irqsave(&lp->lock, flags);
-	lp->irq_disabled = 0;
+	lp->irq_busy = 0;
 	spin_unlock_irqrestore(&lp->lock, flags);
-
-	enable_irq(lp->spi->irq);
 }
 
 static irqreturn_t at86rf230_isr(int irq, void *data)
 {
 	struct at86rf230_local *lp = data;
 
-	disable_irq_nosync(irq);
-
 	spin_lock(&lp->lock);
-	lp->irq_disabled = 1;
+	lp->irq_busy = 1;
 	spin_unlock(&lp->lock);
 
 	schedule_work(&lp->irqwork);
@@ -701,12 +697,7 @@ static int at86rf230_hw_init(struct at86rf230_local *lp)
 		dev_info(&lp->spi->dev, "Status: %02x\n", status);
 	}
 
-	rc = at86rf230_write_subreg(lp, SR_IRQ_MASK, 0xff); /* IRQ_TRX_UR |
-							     * IRQ_CCA_ED |
-							     * IRQ_TRX_END |
-							     * IRQ_PLL_UNL |
-							     * IRQ_PLL_LOCK
-							     */
+	rc = at86rf230_write_subreg(lp, SR_IRQ_MASK, IRQ_TRX_END);
 	if (rc)
 		return rc;
 
@@ -772,7 +763,7 @@ static int at86rf230_probe(struct spi_device *spi)
 {
 	struct ieee802154_dev *dev;
 	struct at86rf230_local *lp;
-	u8 man_id_0, man_id_1;
+	u8 man_id_0, man_id_1, status;
 	int rc;
 	const char *chip;
 	int supported = 0;
@@ -882,10 +873,16 @@ static int at86rf230_probe(struct spi_device *spi)
 	if (rc)
 		goto err_gpio_dir;
 
-	rc = request_irq(spi->irq, at86rf230_isr, IRQF_SHARED,
+	rc = request_irq(spi->irq, at86rf230_isr,
+			 IRQF_SHARED | IRQF_TRIGGER_RISING,
 			 dev_name(&spi->dev), lp);
 	if (rc)
 		goto err_gpio_dir;
+
+	/* Read irq status register to reset irq line */
+	rc = at86rf230_read_subreg(lp, RG_IRQ_STATUS, 0xff, 0, &status);
+	if (rc)
+		goto err_irq;
 
 	rc = ieee802154_register_device(lp->dev);
 	if (rc)
