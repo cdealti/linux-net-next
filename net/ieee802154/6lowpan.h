@@ -151,6 +151,27 @@
 	 (((a)[6]) == 0xFF) &&	\
 	 (((a)[7]) == 0xFF))
 
+/*
+ * Check if flow_lbl of a ipv6hdr is zero.
+ * First byte need to mask with 0xF0
+ * because 0x0F is a part traffic class(dscp).
+ */
+#define lowpan_is_ipv6_flow_lbl_zero(a)		\
+	((!((a)->flow_lbl[0] & 0xF0)) &&	\
+	 (!((a)->flow_lbl[1])) &&		\
+	 (!((a)->flow_lbl[2])))
+
+/*
+ * Check if dscp of a ipv6hdr is zero.
+ * This is needed to check on tc compression.
+ * Not ECN byte in (priority & 0x3) will never
+ * compressed so check only on dscp.
+ */
+#define lowpan_is_ipv6_dscp_zero(a)		\
+	((!((a)->priority & 0xC)) &&		\
+	 (!((a)->flow_lbl[0] & 0x0F))) 
+
+
 #define LOWPAN_DISPATCH_IPV6	0x41 /* 01000001 = 65 */
 #define LOWPAN_DISPATCH_HC1	0x42 /* 01000010 = 66 */
 #define LOWPAN_DISPATCH_IPHC	0x60 /* 011xxxxx = ... */
