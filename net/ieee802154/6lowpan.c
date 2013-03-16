@@ -900,7 +900,7 @@ lowpan_process_data(struct sk_buff *skb)
 {
 	struct ipv6hdr hdr = {};
 	u32 tc_flbl;
-	u8 iphc0, iphc1, num_context = 0;
+	u8 iphc0, iphc1;
 	int err;
 
 	lowpan_raw_dump_table(__func__, "raw skb data dump", skb->data,
@@ -1006,13 +1006,6 @@ lowpan_process_data(struct sk_buff *skb)
 		goto drop;
 
 	pr_debug("iphc0 = %02x, iphc1 = %02x\n", iphc0, iphc1);
-
-	/* another if the CID flag is set */
-	if (iphc1 & LOWPAN_IPHC_CID) {
-		pr_debug("CID flag is set, increase header with one\n");
-		if (lowpan_fetch_skb(skb, &num_context, 1))
-			goto drop;
-	}
 
 	hdr.version = 6;
 	
