@@ -68,39 +68,6 @@ static bool req_802154_ack;
 
 static LIST_HEAD(lowpan_devices);
 
-/*
- * Uncompression of linklocal:
- *   0 -> 16 bytes from packet
- *   1 -> 2  bytes from prefix - bunch of zeroes and 8 from packet
- *   2 -> 2  bytes from prefix - zeroes + 2 from packet
- *   3 -> 2  bytes from prefix - infer 8 bytes from lladdr
- *
- *  NOTE: => the uncompress function does change 0xf to 0x10
- *  NOTE: 0x00 => no-autoconfig => unspecified
- */
-static const u8 lowpan_unc_llconf[] = {0x0f, 0x28, 0x22, 0x20};
-
-/*
- * Uncompression of ctx-based:
- *   0 -> 0 bits  from packet [unspecified / reserved]
- *   1 -> 8 bytes from prefix - bunch of zeroes and 8 from packet
- *   2 -> 8 bytes from prefix - zeroes + 2 from packet
- *   3 -> 8 bytes from prefix - infer 8 bytes from lladdr
- */
-static const u8 lowpan_unc_ctxconf[] = {0x00, 0x88, 0x82, 0x80};
-
-/*
- * Uncompression of ctx-base
- *   0 -> 0 bits from packet
- *   1 -> 2 bytes from prefix - bunch of zeroes 5 from packet
- *   2 -> 2 bytes from prefix - zeroes + 3 from packet
- *   3 -> 2 bytes from prefix - infer 1 bytes from lladdr
- */
-static const u8 lowpan_unc_mxconf[] = {0x0f, 0x25, 0x23, 0x21};
-
-/* Link local prefix */
-static const u8 lowpan_llprefix[] = {0xfe, 0x80};
-
 /* private device info */
 struct lowpan_dev_info {
 	struct net_device	*real_dev; /* real WPAN device ptr */
