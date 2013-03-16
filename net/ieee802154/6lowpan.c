@@ -662,7 +662,7 @@ static int lowpan_give_skb_to_devices(struct sk_buff *skb)
 	int stat = NET_RX_SUCCESS;
 
 	rcu_read_lock();
-	list_for_each_entry_rcu(entry, &lowpan_devices, list)
+	list_for_each_entry_rcu(entry, &lowpan_devices, list) {
 		if (lowpan_dev_info(entry->ldev)->real_dev == skb->dev) {
 			skb_cp = skb_copy(skb, GFP_ATOMIC);
 			if (!skb_cp) {
@@ -673,6 +673,7 @@ static int lowpan_give_skb_to_devices(struct sk_buff *skb)
 			skb_cp->dev = entry->ldev;
 			stat = netif_rx(skb_cp);
 		}
+	}
 	rcu_read_unlock();
 
 	return stat;
