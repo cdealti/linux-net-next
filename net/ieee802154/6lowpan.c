@@ -993,6 +993,70 @@ out:
 	return ret;
 }
 
+/*
+ *  MSB				LSB
+ *   7   6   5   4   3   2   1   0
+ * +---+---+---+---+---+---+---+---+
+ * |CID|SAC|  SAM  | M |DAC|  DAM  |
+ * +---+---+---+---+---+---+---+---+
+ *
+ *
+ */
+static int lowpan_process_iphc1(const u8 iphc1,
+		struct ipv6hdr *hdr, struct sk_buff *skb) 
+{
+	int ret;
+
+	/*
+	 * CID
+	 * TODO
+	 */
+
+	/*
+	 * SAC
+	 */
+	ret = lowpan_uncompress_addr(skb, LOWPAN_IPHC1_ADDR_C_IS_SRC,
+			&hdr->saddr,iphc1, mac_cb(skb)->sa.hwaddr);
+	if (ret < 0)
+		goto out;
+
+	/*
+	 * M
+	 */
+	if (iphc1 & LOWPAN_IPHC1_M_C) {
+		/*
+		 * DAC
+		 * TODO
+		 */
+
+		/*
+		 * DAM
+		 */
+		ret = lowpan_uncompress_multicast_daddr(skb,
+				&hdr->daddr, iphc1);
+		if (ret < 0)
+			goto out;
+	} else {
+		/*
+		 * DAC
+		 * TODO
+		 */
+
+		/*
+		 * DAM
+		 */
+		ret = lowpan_uncompress_addr(skb, LOWPAN_IPHC1_ADDR_C_IS_DEST,
+				&hdr->daddr, iphc1, mac_cb(skb)->da.hwaddr);
+		if (ret < 0)
+			goto out;
+	}
+
+
+	return 0;
+out:
+	return ret;
+}
+
 static int
 lowpan_process_data(struct sk_buff *skb)
 {
@@ -1110,41 +1174,10 @@ lowpan_process_data(struct sk_buff *skb)
 	if (err < 0)
 		goto drop;
 
-	err = lowpan_uncompress_addr(skb, LOWPAN_IPHC1_ADDR_C_IS_SRC,
-			&hdr.saddr, iphc1, mac_cb(skb)->sa.hwaddr);
+
+	err = lowpan_process_iphc1(iphc1, &hdr, skb);
 	if (err < 0)
 		goto drop;
-
-	/*
-	 * M
-	 */
-	if (iphc1 & LOWPAN_IPHC1_M_C) {
-		/*
-		 * DAC
-		 * TODO
-		 */
-
-		/*
-		 * DAM
-		 */
-		err = lowpan_uncompress_multicast_daddr(skb,
-				&hdr.daddr, iphc1);
-		if (err < 0)
-			goto drop;
-	} else {
-		/*
-		 * DAC
-		 * TODO
-		 */
-
-		/*
-		 * DAM
-		 */
-		err = lowpan_uncompress_addr(skb, LOWPAN_IPHC1_ADDR_C_IS_DEST,
-				&hdr.daddr, iphc1, mac_cb(skb)->da.hwaddr);
-		if (err < 0)
-			goto drop;
-	}
 
 	/* UDP data uncompression */
 	if (iphc0 & LOWPAN_IPHC0_NH_C) {
