@@ -1007,6 +1007,24 @@ static int lowpan_process_iphc1(const u8 iphc1,
 {
 	int ret;
 
+	if (iphc1 & LOWPAN_IPHC1_CID_MASK) {
+		printk(KERN_WARNING "CID Bit is set. Context handle "
+				"currently not supported\n");
+		return -EINVAL;
+	}
+
+	if (iphc1 & LOWPAN_IPHC1_SAC_MASK) {
+		printk(KERN_WARNING "SAC Bit is set. Context handle "
+				"currently not supported\n");
+		return -EINVAL;
+	}
+
+	if (iphc1 & LOWPAN_IPHC1_DAC_MASK) {
+		printk(KERN_WARNING "DAC Bit is set. Context handle "
+				"currently not supported\n");
+		return -EINVAL;
+	}
+
 	/*
 	 * CID
 	 * TODO

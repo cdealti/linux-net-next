@@ -469,9 +469,9 @@ static inline void lowpan_set_tc_flbl_to_ipv6(struct ipv6hdr *hdr,
 #define LOWPAN_IPHC1_ADDR_C_IS_DEST	1
 #define LOWPAN_IPHC1_ADDR_C_IS_SRC	0
 
-#define LOWPAN_IPHC_CID         0x80
+#define LOWPAN_IPHC1_CID_MASK	0x80
 
-#define LOWPAN_IPHC_SAC         0x40
+#define LOWPAN_IPHC1_SAC_MASK	0x40
 
 #define LOWPAN_IPHC1_SAM_MASK	0x30
 #define LOWPAN_IPHC1_SAM_SHIFT	4
@@ -487,6 +487,8 @@ static inline void lowpan_set_tc_flbl_to_ipv6(struct ipv6hdr *hdr,
 #define LOWPAN_IPHC1_M_MASK	0x08
 #define LOWPAN_IPHC1_M_SHIFT	3
 #define LOWPAN_IPHC1_M_C	(1 << LOWPAN_IPHC1_M_SHIFT)
+
+#define LOWPAN_IPHC1_DAC_MASK	0x04
 
 #define LOWPAN_IPHC1_DAM_MASK	0x03
 #define LOWPAN_IPHC1_DAM_SHIFT	0
