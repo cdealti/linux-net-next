@@ -863,11 +863,140 @@ static int lowpan_uncompress_multicast_daddr(struct sk_buff *skb,
 	return 0;
 }
 
+/*
+ * This fyunction parses compressed
+ * iphc0 byte to ipv6 header.
+ *
+ * The iphc0 byte is decoded like this:
+ *
+ *  MSB				LSB
+ *   7   6   5   4   3   2   1   0
+ * +---+---+---+---+---+---+---+---+
+ * | 0 | 1 | 1 |  TF   |NH | HLIM  |
+ * +---+---+---+---+---+---+---+---+
+ *
+ * According to RFC6282.
+ *
+ */
+static int lowpan_process_iphc0(const u8 iphc0,
+		struct ipv6hdr *hdr, struct sk_buff *skb)
+{
+	u32 tc_flbl = 0;
+	int ret;
+
+	/*
+	 * Handle traffic class and flow label
+	 * here.
+	 */
+	switch (iphc0 & LOWPAN_IPHC0_TF_MASK) {
+	/*
+	 * Traffic class and flow label inline.
+	 *
+	 * We don't need to change to host byteorder here,
+	 * because all macros are for network byteorder.
+	 */
+	case LOWPAN_IPHC0_TIFI:
+		/*
+		 * Fetch inline data.
+		 */
+		ret = lowpan_fetch_skb(skb, &tc_flbl, LOWPAN_IPHC0_TIFI_SIZE);
+		if (ret < 0)
+			goto out;
+
+		/*
+		 * Get the 28 bit width tc and flowlbl value for ipv6 hdr.
+		 */
+		tc_flbl = lowpan_get_tc_flbl_tifi_from_lowpan(tc_flbl);
+		/*
+		 * Set this tc_flbl to the ipv6, this is splitted in
+		 * two elements, priority and flow_lbl.
+		 */
+		lowpan_set_tc_flbl_to_ipv6(hdr, tc_flbl);
+		break;
+	/*
+	 * DSCP class compressed.
+	 * Flow label and ECN is inline.
+	 */
+	case LOWPAN_IPHC0_TCFI:
+		ret = lowpan_fetch_skb(skb, &tc_flbl, LOWPAN_IPHC0_TCFI_SIZE);
+		if (ret < 0)
+			goto out;
+
+		tc_flbl = lowpan_get_tc_flbl_tcfi_from_lowpan(tc_flbl);
+		lowpan_set_tc_flbl_to_ipv6(hdr, tc_flbl);
+		break;
+	/*
+	 * Traffic class inline.
+	 * Flow label compressed.
+	 */
+	case LOWPAN_IPHC0_TIFC:
+		ret = lowpan_fetch_skb(skb, &tc_flbl, LOWPAN_IPHC0_TIFC_SIZE);
+		if (ret < 0)
+			goto out;
+
+		tc_flbl = lowpan_get_tc_flbl_tifc_from_lowpan(tc_flbl);
+		lowpan_set_tc_flbl_to_ipv6(hdr, tc_flbl);
+		break;
+	/*
+	 * All data is compressed, so doing nothing,
+	 * because ipv6hdr is filled with zeros.
+	 */
+	case LOWPAN_IPHC0_TCFC:
+		break;
+	default:
+		return -EINVAL;
+	}
+
+
+	/*
+	 * Next header
+	 */
+	if (!(iphc0 & LOWPAN_IPHC0_NH_C)) {
+		/*
+		 * Next header is carried inline
+		 */
+		ret = lowpan_fetch_skb(skb, &(hdr->nexthdr),
+				LOWPAN_IPHC0_NH_SIZE);
+		if (ret < 0)
+			goto out;
+
+		pr_debug("NH flag is set, next header "
+				"carried inline: %02x\n",
+				hdr->nexthdr);
+	}
+
+	/*
+	 * Hop LIMITED
+	 */
+	switch (iphc0 & LOWPAN_IPHC0_HLIM_MASK) {
+	case LOWPAN_IPHC0_HLIM_I:
+		ret = lowpan_fetch_skb(skb, &hdr->hop_limit,
+				LOWPAN_IPHC0_HLIM_SIZE);
+		if (ret < 0)
+			goto out;
+		break;
+	case LOWPAN_IPHC0_HLIM_1:
+		hdr->hop_limit = 1;
+		break;
+	case LOWPAN_IPHC0_HLIM_64:
+		hdr->hop_limit = 64;
+		break;
+	case LOWPAN_IPHC0_HLIM_255:
+		hdr->hop_limit = 255;
+		break;
+	default:
+		return -EINVAL;
+	}
+	
+	return 0;
+out:
+	return ret;
+}
+
 static int
 lowpan_process_data(struct sk_buff *skb)
 {
 	struct ipv6hdr hdr = {};
-	u32 tc_flbl;
 	u8 iphc0, iphc1;
 	int err;
 
@@ -977,98 +1106,9 @@ lowpan_process_data(struct sk_buff *skb)
 
 	hdr.version = 6;
 	
-	/*
-	 * Handle traffic class and flow label
-	 * here.
-	 */
-	switch (iphc0 & LOWPAN_IPHC0_TF_MASK) {
-	/*
-	 * Traffic class and flow label inline.
-	 */
-	case LOWPAN_IPHC0_TIFI:
-		/*
-		 * Fetch inline data.
-		 */
-		err = lowpan_fetch_skb(skb, &tc_flbl, LOWPAN_IPHC0_TIFI_SIZE);
-		if (err < 0)
-			goto drop;
-
-		/*
-		 * Get the 28 bit width tc and flowlbl value for ipv6 hdr.
-		 */
-		tc_flbl = lowpan_get_tc_flbl_tifi_from_lowpan(tc_flbl);
-		/*
-		 * Set this tc_flbl to the ipv6, this is splitted in
-		 * two elements, priority and flow_lbl.
-		 */
-		lowpan_set_tc_flbl_to_ipv6(&hdr, tc_flbl);
-		break;
-	/*
-	 * DSCP class compressed.
-	 * Flow label and ECN is inline.
-	 */
-	case LOWPAN_IPHC0_TCFI:
-		err = lowpan_fetch_skb(skb, &tc_flbl, LOWPAN_IPHC0_TCFI_SIZE);
-		if (err < 0)
-			goto drop;
-
-		tc_flbl = lowpan_get_tc_flbl_tcfi_from_lowpan(tc_flbl);
-		lowpan_set_tc_flbl_to_ipv6(&hdr, tc_flbl);
-		break;
-	/*
-	 * Traffic class inline.
-	 * Flow label compressed.
-	 */
-	case LOWPAN_IPHC0_TIFC:
-		err = lowpan_fetch_skb(skb, &tc_flbl, LOWPAN_IPHC0_TIFC_SIZE);
-		if (err < 0)
-			goto drop;
-
-		tc_flbl = lowpan_get_tc_flbl_tifc_from_lowpan(tc_flbl);
-		lowpan_set_tc_flbl_to_ipv6(&hdr, tc_flbl);
-		break;
-	/*
-	 * All data is compressed, so doing nothing,
-	 * because ipv6hdr is filled with zeros.
-	 */
-	case LOWPAN_IPHC0_TCFC:
-		break;
-	default:
+	err = lowpan_process_iphc0(iphc0, &hdr, skb);
+	if (err < 0)
 		goto drop;
-	}
-
-
-	/* Next Header */
-	if (!(iphc0 & LOWPAN_IPHC0_NH_C)) {
-		/* Next header is carried inline */
-		if (lowpan_fetch_skb(skb, &(hdr.nexthdr),
-					LOWPAN_IPHC0_NH_SIZE))
-			goto drop;
-
-		pr_debug("NH flag is set, next header carried inline: %02x\n",
-			 hdr.nexthdr);
-	}
-
-	/* Hop Limit */
-	switch (iphc0 & LOWPAN_IPHC0_HLIM_MASK) {
-	case LOWPAN_IPHC0_HLIM_I:
-		err = lowpan_fetch_skb(skb, &hdr.hop_limit,
-				LOWPAN_IPHC0_HLIM_SIZE);
-		if (err < 0)
-			return -EINVAL;
-		break;
-	case LOWPAN_IPHC0_HLIM_1:
-		hdr.hop_limit = 1;
-		break;
-	case LOWPAN_IPHC0_HLIM_64:
-		hdr.hop_limit = 64;
-		break;
-	case LOWPAN_IPHC0_HLIM_255:
-		hdr.hop_limit = 255;
-		break;
-	default:
-		return -EINVAL;
-	}
 
 	err = lowpan_uncompress_addr(skb, LOWPAN_IPHC1_ADDR_C_IS_SRC,
 			&hdr.saddr, iphc1, mac_cb(skb)->sa.hwaddr);
