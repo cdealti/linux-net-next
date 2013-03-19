@@ -621,11 +621,10 @@ static int lowpan_header_create(struct sk_buff *skb,
 			   unsigned short type, const void *_daddr,
 			   const void *_saddr, unsigned int len)
 {
-	u8 iphc0, iphc1, *hc06_ptr;
+	u8 *hc_ptr, lowpan_hdr[LOWPAN_MAX_HEADER_LENGTH];
 	const struct ipv6hdr *hdr;
 	const u8 *saddr_layer = dev->dev_addr;
 	const u8 *daddr_layer = _daddr;
-	u8 head[LOWPAN_MAX_HEADER_LENGTH];
 	struct ieee802154_addr sa, da;
 
 	/* TODO:
@@ -635,7 +634,7 @@ static int lowpan_header_create(struct sk_buff *skb,
 		return 0;
 
 	hdr = ipv6_hdr(skb);
-	hc06_ptr = head + 2;
+	hc_ptr = lowpan_hdr + 2;
 
 	pr_debug("IPv6 header dump:\n\tversion = %d\n\tlength  = %d\n"
 		 "\tnexthdr = 0x%02x\n\thop_lim = %d\n", hdr->version,
@@ -648,19 +647,17 @@ static int lowpan_header_create(struct sk_buff *skb,
 
 	lowpan_raw_dump_inline(__func__, "daddr", daddr_layer, IEEE802154_ADDR_LEN);
 
-	lowpan_header_setup_iphc0(&iphc0, &hc06_ptr, hdr);
-	lowpan_header_setup_iphc1(&iphc1, &hc06_ptr, hdr,
+	lowpan_header_setup_iphc0(lowpan_hdr, &hc_ptr, hdr);
+	lowpan_header_setup_iphc1(lowpan_hdr + 1, &hc_ptr, hdr,
 			saddr_layer, daddr_layer);
 
 	/* UDP header compression */
 	if (hdr->nexthdr == UIP_PROTO_UDP)
-		lowpan_compress_udp_header(&hc06_ptr, skb);
-
-	head[0] = iphc0;
-	head[1] = iphc1;
+		lowpan_compress_udp_header(&hc_ptr, skb);
 
 	lowpan_fetch_skb(skb, NULL, sizeof(struct ipv6hdr));
-	memcpy(skb_push(skb, hc06_ptr - head), head, hc06_ptr - head);
+	memcpy(skb_push(skb, hc_ptr - lowpan_hdr), lowpan_hdr,
+			hc_ptr - lowpan_hdr);
 
 	lowpan_raw_dump_table(__func__, "raw skb data dump", skb->data,
 				skb->len);
