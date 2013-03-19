@@ -382,49 +382,31 @@ static void lowpan_compress_multicast_daddr(u8 **hc_ptr,
 	}
 }
 
-static int lowpan_header_create(struct sk_buff *skb,
-			   struct net_device *dev,
-			   unsigned short type, const void *_daddr,
-			   const void *_saddr, unsigned int len)
+/*
+ * This fyunction parses compressed
+ * iphc0 byte to ipv6 header.
+ *
+ * The iphc0 byte is decoded like this:
+ *
+ *  MSB				LSB
+ *   7   6   5   4   3   2   1   0
+ * +---+---+---+---+---+---+---+---+
+ * | 0 | 1 | 1 |  TF   |NH | HLIM  |
+ * +---+---+---+---+---+---+---+---+
+ *
+ * According to RFC6282.
+ *
+ * Parameters:
+ *	- iphc1: pointer to iphc1 byte.
+ *	- hc_ptr: double pointer to the 6lowpan header.
+ *	- hdr: the ipv6 header to setup iphc1 byte.
+ */
+static void lowpan_header_setup_iphc0(u8 *iphc0,
+		u8 **hc_ptr, const struct ipv6hdr *hdr)
 {
-	u8 iphc0, iphc1, *hc06_ptr;
-	u32 tc_flbl; 
-	struct ipv6hdr *hdr;
-	const u8 *saddr_layer = dev->dev_addr;
-	const u8 *daddr_layer = _daddr;
-	u8 head[LOWPAN_MAX_HEADER_LENGTH];
-	struct ieee802154_addr sa, da;
+	u32 tc_flbl;
 
-	/* TODO:
-	 * if this package isn't ipv6 one, where should it be routed?
-	 */
-	if (type != ETH_P_IPV6)
-		return 0;
-
-	hdr = ipv6_hdr(skb);
-	hc06_ptr = head + 2;
-
-	pr_debug("IPv6 header dump:\n\tversion = %d\n\tlength  = %d\n"
-		 "\tnexthdr = 0x%02x\n\thop_lim = %d\n", hdr->version,
-		 ntohs(hdr->payload_len), hdr->nexthdr, hdr->hop_limit);
-
-	lowpan_raw_dump_table(__func__, "raw skb network header dump",
-		skb_network_header(skb), sizeof(struct ipv6hdr));
-
-	lowpan_raw_dump_inline(__func__, "saddr", saddr_layer, IEEE802154_ADDR_LEN);
-
-	/*
-	 * As we copy some bit-length fields, in the IPHC encoding bytes,
-	 * we sometimes use |=
-	 * If the field is 0, and the current bit value in memory is 1,
-	 * this does not work. We therefore reset the IPHC encoding here
-	 */
-	iphc0 = LOWPAN_DISPATCH_IPHC;
-	iphc1 = 0;
-
-	/* TODO: context lookup */
-
-	lowpan_raw_dump_inline(__func__, "daddr", daddr_layer, IEEE802154_ADDR_LEN);
+	*iphc0 = LOWPAN_DISPATCH_IPHC;
 
 	/*
 	 * Get the 28 bit tc and tc_flbl value from ipv6hdr.
@@ -449,16 +431,16 @@ static int lowpan_header_create(struct sk_buff *skb,
 			 * We don't check if this is zero here.
 			 * Can we elide it?
 			 */
-			iphc0 |= LOWPAN_IPHC0_TCFC;
+			*iphc0 |= LOWPAN_IPHC0_TCFC;
 		} else {
 			/*
 			 * Compress flow_lbl only, we send only
 			 * DSCP and ECN.
 			 */
-			iphc0 |= LOWPAN_IPHC0_TIFC;
+			*iphc0 |= LOWPAN_IPHC0_TIFC;
 			
 			tc_flbl = lowpan_get_tifc_inline_value(tc_flbl);
-			set_hc_ptr_data(&hc06_ptr, &tc_flbl, LOWPAN_IPHC0_TIFC_SIZE);
+			set_hc_ptr_data(hc_ptr, &tc_flbl, LOWPAN_IPHC0_TIFC_SIZE);
 		}
 	} else {
 		/*
@@ -468,16 +450,16 @@ static int lowpan_header_create(struct sk_buff *skb,
 			/*
 			 * Do only flow_lbl inline with ECN bits.
 			 */
-			iphc0 |= LOWPAN_IPHC0_TCFI;
+			*iphc0 |= LOWPAN_IPHC0_TCFI;
 			
 			tc_flbl = lowpan_get_tcfi_inline_value(tc_flbl);
-			set_hc_ptr_data(&hc06_ptr, &tc_flbl, LOWPAN_IPHC0_TCFI_SIZE);
+			set_hc_ptr_data(hc_ptr, &tc_flbl, LOWPAN_IPHC0_TCFI_SIZE);
 		} else {
 			/*
 			 * Do all inline, traffic class and flow_lbl.
 			 */
 			tc_flbl = lowpan_get_tifi_inline_value(tc_flbl);
-			set_hc_ptr_data(&hc06_ptr, &tc_flbl, LOWPAN_IPHC0_TIFI_SIZE);
+			set_hc_ptr_data(hc_ptr, &tc_flbl, LOWPAN_IPHC0_TIFI_SIZE);
 		}
 	}
 
@@ -486,9 +468,9 @@ static int lowpan_header_create(struct sk_buff *skb,
 
 	/* Next Header is compress if UDP */
 	if (hdr->nexthdr == UIP_PROTO_UDP)
-		iphc0 |= LOWPAN_IPHC0_NH_C;
+		*iphc0 |= LOWPAN_IPHC0_NH_C;
 	else
-		set_hc_ptr_data(&hc06_ptr, &hdr->nexthdr,
+		set_hc_ptr_data(hc_ptr, &hdr->nexthdr,
 				LOWPAN_IPHC0_NH_SIZE);
 
 	/*
@@ -500,19 +482,57 @@ static int lowpan_header_create(struct sk_buff *skb,
 	 */
 	switch (hdr->hop_limit) {
 	case 1:
-		iphc0 |= LOWPAN_IPHC0_HLIM_1;
+		*iphc0 |= LOWPAN_IPHC0_HLIM_1;
 		break;
 	case 64:
-		iphc0 |= LOWPAN_IPHC0_HLIM_64;
+		*iphc0 |= LOWPAN_IPHC0_HLIM_64;
 		break;
 	case 255:
-		iphc0 |= LOWPAN_IPHC0_HLIM_255;
+		*iphc0 |= LOWPAN_IPHC0_HLIM_255;
 		break;
 	default:
-		set_hc_ptr_data(&hc06_ptr, &hdr->hop_limit,
+		set_hc_ptr_data(hc_ptr, &hdr->hop_limit,
 				LOWPAN_IPHC0_HLIM_SIZE);
 	}
 
+	pr_debug("%s: 0x%02x\n", __func__, *iphc0);
+}
+
+static int lowpan_header_create(struct sk_buff *skb,
+			   struct net_device *dev,
+			   unsigned short type, const void *_daddr,
+			   const void *_saddr, unsigned int len)
+{
+	u8 iphc0, iphc1, *hc06_ptr;
+	struct ipv6hdr *hdr;
+	const u8 *saddr_layer = dev->dev_addr;
+	const u8 *daddr_layer = _daddr;
+	u8 head[LOWPAN_MAX_HEADER_LENGTH];
+	struct ieee802154_addr sa, da;
+
+	/* TODO:
+	 * if this package isn't ipv6 one, where should it be routed?
+	 */
+	if (type != ETH_P_IPV6)
+		return 0;
+
+	hdr = ipv6_hdr(skb);
+	hc06_ptr = head + 2;
+
+	pr_debug("IPv6 header dump:\n\tversion = %d\n\tlength  = %d\n"
+		 "\tnexthdr = 0x%02x\n\thop_lim = %d\n", hdr->version,
+		 ntohs(hdr->payload_len), hdr->nexthdr, hdr->hop_limit);
+
+	lowpan_raw_dump_table(__func__, "raw skb network header dump",
+		skb_network_header(skb), sizeof(struct ipv6hdr));
+
+	lowpan_raw_dump_inline(__func__, "saddr", saddr_layer, IEEE802154_ADDR_LEN);
+
+	iphc1 = 0;
+
+	lowpan_raw_dump_inline(__func__, "daddr", daddr_layer, IEEE802154_ADDR_LEN);
+
+	lowpan_header_setup_iphc0(&iphc0, &hc06_ptr, hdr);
 	/*
 	 * Setting CID bit.
 	 * This is necessary to handle context based
