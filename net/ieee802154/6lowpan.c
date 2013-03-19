@@ -621,7 +621,7 @@ static int lowpan_header_create(struct sk_buff *skb,
 			   unsigned short type, const void *_daddr,
 			   const void *_saddr, unsigned int len)
 {
-	u8 *hc_ptr, lowpan_hdr[LOWPAN_MAX_HEADER_LENGTH];
+	u8 *hc_ptr, lowpan_hdr[LOWPAN_MAX_HEADER_LENGTH] = {};
 	const struct ipv6hdr *hdr;
 	const u8 *saddr_layer = dev->dev_addr;
 	const u8 *daddr_layer = _daddr;
