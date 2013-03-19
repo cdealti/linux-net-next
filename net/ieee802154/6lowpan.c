@@ -498,6 +498,124 @@ static void lowpan_header_setup_iphc0(u8 *iphc0,
 	pr_debug("%s: 0x%02x\n", __func__, *iphc0);
 }
 
+/*
+ * This function setups the iphc1 byte on a
+ * 6lowpan header.
+ *
+ *  MSB				LSB
+ *   7   6   5   4   3   2   1   0
+ * +---+---+---+---+---+---+---+---+
+ * |CID|SAC|  SAM  | M |DAC|  DAM  |
+ * +---+---+---+---+---+---+---+---+
+ *
+ * According to RFC6282.
+ *
+ * Parameters:
+ *	- iphc1: pointer to iphc1 byte.
+ *	- hc_ptr: double pointer to the 6lowpan header.
+ *	- hdr: the ipv6 header to setup iphc1 byte.
+ *	- saddr_layer: source layeraddress, from mac802154.
+ *	- daddr_layer: destination layeraddress, from mac802154.
+ *
+ * TODO:
+ *	- Context based compression is currently not supported!
+ */
+static void lowpan_header_setup_iphc1(u8 *iphc1,
+		u8 **hc_ptr, const struct ipv6hdr *hdr,
+		const void *saddr_layer, const void *daddr_layer)
+{
+	*iphc1 = 0;
+
+	/*
+	 * Setting CID bit.
+	 * This is necessary to handle context based
+	 * connection.
+	 *
+	 * CID
+	 * TODO:
+	 * Context based connection isn't supported
+	 * at the moment.
+	 */
+
+	/*
+	 * Setting SAC bit.
+	 * This is necessary to handle context based
+	 * connection for the source address.
+	 *
+	 * SAC
+	 * TODO
+	 * Context based connection isn't supported
+	 * at the moment.
+	 */
+
+	/*
+	 * Setting SAM bit.
+	 *
+	 * The SAM bit indicate how the source address
+	 * is compressed.
+	 */
+	lowpan_compress_addr(hc_ptr, LOWPAN_IPHC1_ADDR_C_IS_SRC, 
+			&hdr->saddr, iphc1, saddr_layer);
+
+		/*
+	 * This part of this function determine the compression of
+	 * the destination address.
+	 */
+	if (is_addr_mcast(&hdr->daddr)) {
+		/*
+		 * Setting M bit.
+		 *
+		 * Destination address is a multicast address.
+		 * The M bit indicate that it is a multicast
+		 * address.
+		 */
+		*iphc1 |= LOWPAN_IPHC1_M_C;
+
+		/*
+		 * Setting DAC bit.
+		 * This is necessary to handle context based
+		 * connection for the multicast destination address.
+		 *
+		 * DAC
+		 * TODO
+		 * Context based connection isn't supported
+		 * at the moment.
+		 */
+
+		/*
+		 * Setting DAM bit.
+		 *
+		 * The DAM bit indicate how the multicast destination
+		 * address is compressed.
+		 * 
+		 */
+		lowpan_compress_multicast_daddr(hc_ptr, &hdr->daddr, iphc1);
+	} else {
+		/*
+		 * Setting DAC bit.
+		 * This is necessary to handle context based
+		 * connection for the linklocal destination address.
+		 *
+		 * DAC
+		 * TODO
+		 * Context based connection isn't supported
+		 * at the moment.
+		 */
+
+		/*
+		 * Setting DAM bit.
+		 *
+		 * The DAM bit indicate how the linklocal destination
+		 * address is compressed.
+		 * 
+		 */
+		lowpan_compress_addr(hc_ptr, LOWPAN_IPHC1_ADDR_C_IS_DEST,
+				&hdr->daddr, iphc1, daddr_layer);
+	}
+	
+	pr_debug("%s: 0x%02x\n", __func__, *iphc1);
+}
+
 static int lowpan_header_create(struct sk_buff *skb,
 			   struct net_device *dev,
 			   unsigned short type, const void *_daddr,
@@ -528,97 +646,11 @@ static int lowpan_header_create(struct sk_buff *skb,
 
 	lowpan_raw_dump_inline(__func__, "saddr", saddr_layer, IEEE802154_ADDR_LEN);
 
-	iphc1 = 0;
-
 	lowpan_raw_dump_inline(__func__, "daddr", daddr_layer, IEEE802154_ADDR_LEN);
 
 	lowpan_header_setup_iphc0(&iphc0, &hc06_ptr, hdr);
-	/*
-	 * Setting CID bit.
-	 * This is necessary to handle context based
-	 * connection.
-	 *
-	 * CID
-	 * TODO:
-	 * Context based connection isn't supported
-	 * at the moment.
-	 */
-
-	/*
-	 * Setting SAC bit.
-	 * This is necessary to handle context based
-	 * connection for the source address.
-	 *
-	 * SAC
-	 * TODO
-	 * Context based connection isn't supported
-	 * at the moment.
-	 */
-
-	/*
-	 * Setting SAM bit.
-	 *
-	 * The SAM bit indicate how the source address
-	 * is compressed.
-	 */
-	lowpan_compress_addr(&hc06_ptr, LOWPAN_IPHC1_ADDR_C_IS_SRC, 
-			&hdr->saddr, &iphc1, saddr_layer);
-
-		/*
-	 * This part of this function determine the compression of
-	 * the destination address.
-	 */
-	if (is_addr_mcast(&hdr->daddr)) {
-		/*
-		 * Setting M bit.
-		 *
-		 * Destination address is a multicast address.
-		 * The M bit indicate that it is a multicast
-		 * address.
-		 */
-		iphc1 |= LOWPAN_IPHC1_M_C;
-
-		/*
-		 * Setting DAC bit.
-		 * This is necessary to handle context based
-		 * connection for the multicast destination address.
-		 *
-		 * DAC
-		 * TODO
-		 * Context based connection isn't supported
-		 * at the moment.
-		 */
-
-		/*
-		 * Setting DAM bit.
-		 *
-		 * The DAM bit indicate how the multicast destination
-		 * address is compressed.
-		 * 
-		 */
-		lowpan_compress_multicast_daddr(&hc06_ptr, &hdr->daddr, &iphc1);
-	} else {
-		/*
-		 * Setting DAC bit.
-		 * This is necessary to handle context based
-		 * connection for the linklocal destination address.
-		 *
-		 * DAC
-		 * TODO
-		 * Context based connection isn't supported
-		 * at the moment.
-		 */
-
-		/*
-		 * Setting DAM bit.
-		 *
-		 * The DAM bit indicate how the linklocal destination
-		 * address is compressed.
-		 * 
-		 */
-		lowpan_compress_addr(&hc06_ptr, LOWPAN_IPHC1_ADDR_C_IS_DEST,
-				&hdr->daddr, &iphc1, daddr_layer);
-	}
+	lowpan_header_setup_iphc1(&iphc1, &hc06_ptr, hdr,
+			saddr_layer, daddr_layer);
 
 	/* UDP header compression */
 	if (hdr->nexthdr == UIP_PROTO_UDP)
