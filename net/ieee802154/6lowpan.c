@@ -963,6 +963,13 @@ static int lowpan_process_iphc0(const u8 iphc0,
 		pr_debug("NH flag is set, next header "
 				"carried inline: %02x\n",
 				hdr->nexthdr);
+	} else {
+		/* 
+		 * TODO:
+		 * RFC says there are some others ipv6
+		 * extensions compressions available.
+		 */
+		hdr->nexthdr = UIP_PROTO_UDP;
 	}
 
 	/*
@@ -1198,7 +1205,7 @@ lowpan_process_data(struct sk_buff *skb)
 		goto drop;
 
 	/* UDP data uncompression */
-	if (iphc0 & LOWPAN_IPHC0_NH_C) {
+	if (hdr.nexthdr == UIP_PROTO_UDP) {
 		struct udphdr uh;
 		struct sk_buff *new;
 		if (lowpan_uncompress_udp_header(skb, &uh))
@@ -1222,8 +1229,6 @@ lowpan_process_data(struct sk_buff *skb)
 
 		lowpan_raw_dump_table(__func__, "raw UDP header dump",
 				      (u8 *)&uh, sizeof(uh));
-
-		hdr.nexthdr = UIP_PROTO_UDP;
 	}
 
 	/* Not fragmented package */
