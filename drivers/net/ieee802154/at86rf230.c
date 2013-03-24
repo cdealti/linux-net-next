@@ -239,8 +239,8 @@ struct at86rf230_local {
 #define STATE_SLEEP		0x0F
 #define STATE_BUSY_RX_AACK	0x11
 #define STATE_BUSY_TX_ARET	0x12
-#define STATE_BUSY_RX_AACK_ON	0x16
-#define STATE_BUSY_TX_ARET_ON	0x19
+#define STATE_RX_AACK_ON	0x16
+#define STATE_TX_ARET_ON	0x19
 #define STATE_RX_ON_NOCLK	0x1C
 #define STATE_RX_AACK_ON_NOCLK	0x1D
 #define STATE_BUSY_RX_AACK_NOCLK 0x1E
@@ -465,7 +465,7 @@ at86rf230_state(struct ieee802154_dev *dev, int state)
 	might_sleep();
 
 	if (state == STATE_FORCE_TX_ON)
-		desired_status = STATE_TX_ON;
+		desired_status = STATE_TX_ARET_ON;
 	else if (state == STATE_FORCE_TRX_OFF)
 		desired_status = STATE_TRX_OFF;
 	else
@@ -491,8 +491,35 @@ at86rf230_state(struct ieee802154_dev *dev, int state)
 			goto err;
 	} while (val == STATE_TRANSITION_IN_PROGRESS);
 
+       /* Make sure we go to TX_ON before we go to STATE_TX_ARET_ON  */
+       if (desired_status == STATE_TX_ARET_ON) {
+               rc = at86rf230_write_subreg(lp, SR_TRX_CMD, STATE_TX_ON);
+               if (rc)
+                       goto err;
+
+               do {
+                       rc = at86rf230_read_subreg(lp, SR_TRX_STATUS, &val);
+                       if (rc)
+                               goto err;
+                       pr_debug("%s val3 = %x\n", __func__, val);
+               } while (val == STATE_TRANSITION_IN_PROGRESS);
+
+               rc = at86rf230_write_subreg(lp, SR_TRX_CMD, desired_status);
+               if (rc)
+                       goto err;
+
+               do {
+                       rc = at86rf230_read_subreg(lp, SR_TRX_STATUS, &val);
+                       if (rc)
+                               goto err;
+                       pr_debug("%s val4 = %x\n", __func__, val);
+               } while (val == STATE_TRANSITION_IN_PROGRESS);
+       }
 
 	if (val == desired_status)
+		return 0;
+
+	if (state == STATE_RX_AACK_ON && val == STATE_BUSY_RX_AACK)
 		return 0;
 
 	pr_err("unexpected state change: %d, asked for %d\n", val, state);
@@ -513,7 +540,7 @@ at86rf230_start(struct ieee802154_dev *dev)
 	if (rc)
 		return rc;
 
-	return at86rf230_state(dev, STATE_RX_ON);
+	return at86rf230_state(dev, STATE_RX_AACK_ON);
 }
 
 static void
@@ -625,6 +652,54 @@ err:
 	return -EINVAL;
 }
 
+static int
+at86rf230_set_hw_addr_filt(struct ieee802154_dev *dev,
+                                               struct ieee802154_hw_addr_filt *filt,
+                                               unsigned long changed)
+{
+	struct at86rf230_local *lp = dev->priv;
+
+	at86rf230_stop(dev);
+	
+	switch (changed)
+	{
+	case IEEE802515_AFILT_SADDR_CHANGED:
+		dev_info(&lp->spi->dev, "at86rf230_set_hw_addr_filt called for saddr\n");
+		__at86rf230_write(lp, RG_SHORT_ADDR_0, filt->short_addr & 0xff); /* LSB */
+		__at86rf230_write(lp, RG_SHORT_ADDR_1, (filt->short_addr >> 8) & 0xff); /* MSB */
+		break;
+	case IEEE802515_AFILT_PANID_CHANGED:
+		dev_info(&lp->spi->dev, "at86rf230_set_hw_addr_filt called for pan id\n");
+		__at86rf230_write(lp, RG_PAN_ID_0, filt->pan_id & 0xff); /* LSB */
+		__at86rf230_write(lp, RG_PAN_ID_1, (filt->pan_id >> 8) & 0xff); /* MSB */
+		break;
+	case IEEE802515_AFILT_IEEEADDR_CHANGED:
+		dev_info(&lp->spi->dev, "at86rf230_set_hw_addr_filt called ieee addr\n");
+		// Make sure order MSB to LSB is correct
+		at86rf230_write_subreg(lp, SR_IEEE_ADDR_0, filt->ieee_addr[7]);
+		at86rf230_write_subreg(lp, SR_IEEE_ADDR_1, filt->ieee_addr[6]);
+		at86rf230_write_subreg(lp, SR_IEEE_ADDR_2, filt->ieee_addr[5]);
+		at86rf230_write_subreg(lp, SR_IEEE_ADDR_3, filt->ieee_addr[4]);
+		at86rf230_write_subreg(lp, SR_IEEE_ADDR_4, filt->ieee_addr[3]);
+		at86rf230_write_subreg(lp, SR_IEEE_ADDR_5, filt->ieee_addr[2]);
+		at86rf230_write_subreg(lp, SR_IEEE_ADDR_6, filt->ieee_addr[1]);
+		at86rf230_write_subreg(lp, SR_IEEE_ADDR_7, filt->ieee_addr[0]);
+		break;
+	case IEEE802515_AFILT_PANC_CHANGED:
+		if (filt->pan_coord) 
+			at86rf230_write_subreg(lp, SR_AACK_I_AM_COORD, 1);
+		else
+			at86rf230_write_subreg(lp, SR_AACK_I_AM_COORD, 0);
+		break;
+	default:
+		printk(KERN_ERR "%s: unable to apply change, not supported\n", __func__);
+	}
+	
+	at86rf230_start(dev);
+	
+	return 0;
+}
+
 static struct ieee802154_ops at86rf230_ops = {
 	.owner = THIS_MODULE,
 	.xmit = at86rf230_xmit,
@@ -632,6 +707,7 @@ static struct ieee802154_ops at86rf230_ops = {
 	.set_channel = at86rf230_channel,
 	.start = at86rf230_start,
 	.stop = at86rf230_stop,
+	.set_hw_addr_filt = at86rf230_set_hw_addr_filt,
 };
 
 static void at86rf230_irqwork(struct work_struct *work)
@@ -719,7 +795,7 @@ static int at86rf230_hw_init(struct at86rf230_local *lp)
 	/* Wait the next SLEEP cycle */
 	msleep(100);
 
-	rc = at86rf230_write_subreg(lp, SR_TRX_CMD, STATE_TX_ON);
+	at86rf230_write_subreg(lp, SR_TRX_CMD, STATE_TX_ARET_ON);
 	if (rc)
 		return rc;
 	msleep(1);
@@ -808,7 +884,7 @@ static int at86rf230_probe(struct spi_device *spi)
 	dev->extra_tx_headroom = 0;
 	/* We do support only 2.4 Ghz */
 	dev->phy->channels_supported[0] = 0x7FFF800;
-	dev->flags = IEEE802154_HW_OMIT_CKSUM;
+	dev->flags = IEEE802154_HW_OMIT_CKSUM | IEEE802154_HW_AACK;;
 
 	mutex_init(&lp->bmux);
 	INIT_WORK(&lp->irqwork, at86rf230_irqwork);
