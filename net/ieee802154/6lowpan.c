@@ -82,7 +82,7 @@ struct lowpan_dev_record {
 struct lowpan_fragment {
 	struct sk_buff		*skb;		/* skb to be assembled */
 	u16			length;		/* length to be assemled */
-	u32			bytes_rcv;	/* bytes received */
+	u16			bytes_rcv;	/* bytes received */
 	u16			tag;		/* current fragment tag */
 	struct timer_list	timer;		/* assembling timer */
 	struct list_head	list;		/* fragments list */
@@ -789,18 +789,17 @@ lowpan_alloc_new_frame(struct sk_buff *skb, u16 len, u16 tag)
 	if (!frame)
 		goto frame_err;
 
-	INIT_LIST_HEAD(&frame->list);
-
 	frame->length = len;
 	frame->tag = tag;
 
 	/* allocate buffer for frame assembling */
-	frame->skb = netdev_alloc_skb_ip_align(skb->dev, frame->length +
-					       sizeof(struct ipv6hdr));
-
+	frame->skb = netdev_alloc_skb_ip_align(skb->dev,
+			frame->length + sizeof(struct ipv6hdr));
 	if (!frame->skb)
 		goto skb_err;
 
+	frame->skb->protocol = htons(ETH_P_IPV6);
+	frame->skb->pkt_type = PACKET_HOST;
 	frame->skb->priority = skb->priority;
 	frame->skb->dev = skb->dev;
 
@@ -815,10 +814,6 @@ lowpan_alloc_new_frame(struct sk_buff *skb, u16 len, u16 tag)
 	 */
 	memcpy(frame->skb->cb, skb->cb, sizeof(skb->cb));
 
-	/*
-	 * TODO timer doesn't work yet
-	 */
-#if 0
 	init_timer(&frame->timer);
 	/* time out is the same as for ipv6 - 60 sec */
 	frame->timer.expires = jiffies + LOWPAN_FRAG_TIMEOUT;
@@ -826,12 +821,9 @@ lowpan_alloc_new_frame(struct sk_buff *skb, u16 len, u16 tag)
 	frame->timer.function = lowpan_fragment_timer_expired;
 
 	add_timer(&frame->timer);
-#endif
-
 	list_add_tail(&frame->list, &lowpan_fragments);
 
 	return frame;
-
 skb_err:
 	kfree(frame);
 frame_err:
@@ -1307,8 +1299,8 @@ err:
         return -1;
 }
 
-static struct lowpan_fragment *lowpan_get_tag_frame(struct sk_buff *skb,
-                u16 d_tag, u16 d_size)
+static struct lowpan_fragment *lowpan_get_tag_frame(
+		struct sk_buff *skb, u16 d_tag, u16 d_size)
 {
         struct lowpan_fragment *frame;
 
@@ -1318,6 +1310,23 @@ static struct lowpan_fragment *lowpan_get_tag_frame(struct sk_buff *skb,
         }
 
         return lowpan_alloc_new_frame(skb, d_size, d_tag);
+}
+
+static int lowpan_check_frag_complete(struct lowpan_fragment *frame)
+{
+	struct ipv6hdr *hdr = (struct ipv6hdr *)frame->skb->data;
+
+	if (frame->bytes_rcv != frame->length)
+		return 0;
+	
+	list_del(&frame->list);
+	
+	del_timer_sync(&frame->timer);
+	hdr->payload_len = htons(frame->length - sizeof(struct ipv6hdr));
+	lowpan_give_skb_to_devices(frame->skb);
+	kfree(frame);
+
+	return 1;
 }
 
 static int lowpan_rcv(struct sk_buff *skb, struct net_device *dev,
@@ -1378,18 +1387,20 @@ static int lowpan_rcv(struct sk_buff *skb, struct net_device *dev,
 		if (ret < 0)
 			goto drop;
 		spin_lock_bh(&flist_lock);
-		frame = lowpan_get_tag_frame(skb, d_tag, d_size);
 		
+		frame = lowpan_get_tag_frame(skb, d_tag, d_size);
+
 		skb = lowpan_process_data(skb, &hdr, d_size);
 		if (!skb)
 			goto unlock_and_drop;
-
+		
 		skb_copy_to_linear_data(frame->skb,
 				&hdr, sizeof(struct ipv6hdr));
 		skb_copy_to_linear_data_offset(frame->skb, sizeof(struct ipv6hdr),
 				skb->data, skb->len);
-
+		
 		frame->bytes_rcv += sizeof(struct ipv6hdr) + skb->len;
+		lowpan_check_frag_complete(frame);
 
 		spin_unlock_bh(&flist_lock);
 		break;
@@ -1400,30 +1411,13 @@ static int lowpan_rcv(struct sk_buff *skb, struct net_device *dev,
 		spin_lock_bh(&flist_lock);
 		
 		frame = lowpan_get_tag_frame(skb, d_tag, d_size);
+		
 		skb_copy_to_linear_data_offset(frame->skb, (d_offset * 8),
 				skb->data, skb->len);
 		
 		frame->bytes_rcv += skb->len;
+		lowpan_check_frag_complete(frame);
 
-		if (frame->bytes_rcv == d_size) {
-			/* FIXME: frame->timer.expires > jiffies) */
-			list_del(&frame->list);
-			/*
-			 * TODO
-			 * I got some problem with timer
-			 * [   56.655052] net_ratelimit: xx callbacks suppressed
-			 * Check this
-			 */
-			//del_timer_sync(&frame->timer);
-			memcpy(&hdr, frame->skb->data, sizeof(struct ipv6hdr));
-			skb_pull(frame->skb, sizeof(struct ipv6hdr));
-			
-			hdr.payload_len = htons(frame->skb->len);
-			lowpan_skb_deliver(frame->skb, &hdr);
-			dev_kfree_skb(skb);
-			skb = frame->skb;
-			kfree(frame);
-		}
 		spin_unlock_bh(&flist_lock);
 		break;
 	default:
