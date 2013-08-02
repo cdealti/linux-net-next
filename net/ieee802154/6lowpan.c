@@ -353,7 +353,7 @@ lowpan_compress_udp_header(u8 **hc06_ptr, struct sk_buff *skb)
 				LOWPAN_NHC_UDP_4BIT_PORT)) {
 		pr_debug("UDP header: both ports compression to 4 bits\n");
 		**hc06_ptr = LOWPAN_NHC_UDP_CS_P_11;
-		**(hc06_ptr + 1) = /* subtraction is faster */
+		*(*hc06_ptr + 1) = /* subtraction is faster */
 		   (u8)((uh->dest - LOWPAN_NHC_UDP_4BIT_PORT) +
 		       ((uh->source & LOWPAN_NHC_UDP_4BIT_PORT) << 4));
 		*hc06_ptr += 2;
@@ -362,14 +362,14 @@ lowpan_compress_udp_header(u8 **hc06_ptr, struct sk_buff *skb)
 		pr_debug("UDP header: remove 8 bits of dest\n");
 		**hc06_ptr = LOWPAN_NHC_UDP_CS_P_01;
 		memcpy(*hc06_ptr + 1, &uh->source, 2);
-		**(hc06_ptr + 3) = (u8)(uh->dest - LOWPAN_NHC_UDP_8BIT_PORT);
+		*(*hc06_ptr + 3) = (u8)(uh->dest - LOWPAN_NHC_UDP_8BIT_PORT);
 		*hc06_ptr += 4;
 	} else if ((uh->source & LOWPAN_NHC_UDP_8BIT_MASK) ==
 			LOWPAN_NHC_UDP_8BIT_PORT) {
 		pr_debug("UDP header: remove 8 bits of source\n");
 		**hc06_ptr = LOWPAN_NHC_UDP_CS_P_10;
 		memcpy(*hc06_ptr + 1, &uh->dest, 2);
-		**(hc06_ptr + 3) = (u8)(uh->source - LOWPAN_NHC_UDP_8BIT_PORT);
+		*(*hc06_ptr + 3) = (u8)(uh->source - LOWPAN_NHC_UDP_8BIT_PORT);
 		*hc06_ptr += 4;
 	} else {
 		pr_debug("UDP header: can't compress\n");
@@ -982,11 +982,10 @@ lowpan_process_data(struct sk_buff *skb, struct ipv6hdr *hdr, unsigned d_size)
 		 */
 		new = skb_copy_expand(skb, sizeof(struct udphdr),
 				      skb_tailroom(skb), GFP_ATOMIC);
-		kfree_skb(skb);
-
 		if (!new)
-			return NULL;
+			goto drop;
 
+		kfree_skb(skb);
 		skb = new;
 
 		skb_push(skb, sizeof(struct udphdr));
@@ -1008,6 +1007,7 @@ lowpan_process_data(struct sk_buff *skb, struct ipv6hdr *hdr, unsigned d_size)
 
 	lowpan_raw_dump_table(__func__, "raw header dump", (u8 *)hdr,
 			sizeof(struct ipv6hdr));
+	
 	return skb;
 drop:
 	kfree_skb(skb);
@@ -1343,7 +1343,7 @@ static int lowpan_rcv(struct sk_buff *skb, struct net_device *dev,
 
 	if (dev->type != ARPHRD_IEEE802154)
 		goto drop;
-
+	
 	/* TODO why we need to handle it?
 	 */
 	if (*skb->data == LOWPAN_DISPATCH_IPV6) {
