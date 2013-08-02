@@ -1384,7 +1384,7 @@ static int lowpan_rcv(struct sk_buff *skb, struct net_device *dev,
 		if (!skb)
 			goto unlock_and_drop;
 
-		skb_copy_to_linear_data_offset(frame->skb, 0,
+		skb_copy_to_linear_data(frame->skb,
 				&hdr, sizeof(struct ipv6hdr));
 		skb_copy_to_linear_data_offset(frame->skb, sizeof(struct ipv6hdr),
 				skb->data, skb->len);
