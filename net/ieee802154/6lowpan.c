@@ -834,7 +834,7 @@ frame_err:
 }
 
 static struct sk_buff *
-lowpan_process_data(struct sk_buff *skb, struct ipv6hdr *hdr, unsigned d_size, size_t *real_header_len)
+lowpan_process_data(struct sk_buff *skb, struct ipv6hdr *hdr, unsigned d_size)
 {
 	u8 tmp, iphc0, iphc1;
 	const struct ieee802154_addr *_saddr, *_daddr;
@@ -851,10 +851,6 @@ lowpan_process_data(struct sk_buff *skb, struct ipv6hdr *hdr, unsigned d_size, s
 	if (lowpan_fetch_skb_u8(skb, &iphc1))
 		goto drop;
 
-	if (real_header_len) {
-		*real_header_len = 0;
-		*real_header_len += sizeof(struct ipv6hdr);
-	}
 	memset(hdr, 0, sizeof(struct ipv6hdr));
 
 	_saddr = &mac_cb(skb)->sa;
@@ -1002,8 +998,6 @@ lowpan_process_data(struct sk_buff *skb, struct ipv6hdr *hdr, unsigned d_size, s
 		skb_push(skb, sizeof(struct udphdr));
 		skb_reset_transport_header(skb);
 		skb_copy_to_linear_data(skb, &uh, sizeof(struct udphdr));
-		if (real_header_len)
-			*real_header_len += sizeof(struct udphdr);
 
 		lowpan_raw_dump_table(__func__, "raw UDP header dump",
 				      (u8 *)&uh, sizeof(uh));
@@ -1351,7 +1345,6 @@ static int lowpan_rcv(struct sk_buff *skb, struct net_device *dev,
 	int ret;
 	u16 d_tag, d_size = 0;
 	u8 d_offset;
-	size_t real_header_len;
 	struct ipv6hdr hdr;
 	struct lowpan_fragment *frame;
 
@@ -1392,7 +1385,7 @@ static int lowpan_rcv(struct sk_buff *skb, struct net_device *dev,
 	switch (*skb->data & LOWPAN_DISPATCH_MASK)
 	{
 	case LOWPAN_DISPATCH_IPHC:	/* ipv6 datagram */
-		skb = lowpan_process_data(skb, &hdr, 0, NULL);
+		skb = lowpan_process_data(skb, &hdr, 0);
 		if (!skb)
 			goto drop;
 
@@ -1407,13 +1400,13 @@ static int lowpan_rcv(struct sk_buff *skb, struct net_device *dev,
 		
 		frame = lowpan_get_tag_frame(skb, d_tag, d_size);
 
-		skb = lowpan_process_data(skb, &hdr, d_size, &real_header_len);
+		skb = lowpan_process_data(skb, &hdr, d_size);
 		if (!skb)
 			goto unlock_and_drop;
 		
 		skb_copy_to_linear_data(frame->skb,
 				&hdr, sizeof(struct ipv6hdr));
-		skb_copy_to_linear_data_offset(frame->skb, real_header_len,
+		skb_copy_to_linear_data_offset(frame->skb, sizeof(struct ipv6hdr),
 				skb->data, skb->len);
 		
 		frame->bytes_rcv += sizeof(struct ipv6hdr) + skb->len;
