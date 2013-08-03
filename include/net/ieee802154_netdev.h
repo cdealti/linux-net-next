@@ -44,6 +44,7 @@ struct ieee802154_mac_cb {
 	 * only between dower 802.15.4 to 6lowpan.
 	 * I use this for 6lowpan -> 802.15.4
 	 */
+	u8 is_udp_compression;
 	size_t lowpan_header_len;
 };
 

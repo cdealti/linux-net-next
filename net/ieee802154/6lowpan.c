@@ -661,9 +661,12 @@ static int lowpan_header_create(struct sk_buff *skb,
 		}
 	}
 
+	mac_cb(skb)->is_udp_compression = 0;
 	/* UDP header compression */
-	if (hdr->nexthdr == UIP_PROTO_UDP)
+	if (hdr->nexthdr == UIP_PROTO_UDP) {
+		mac_cb(skb)->is_udp_compression = 1;
 		lowpan_compress_udp_header(&hc06_ptr, skb);
+	}
 
 	head[0] = iphc0;
 	head[1] = iphc1;
@@ -831,7 +834,7 @@ frame_err:
 }
 
 static struct sk_buff *
-lowpan_process_data(struct sk_buff *skb, struct ipv6hdr *hdr, unsigned d_size)
+lowpan_process_data(struct sk_buff *skb, struct ipv6hdr *hdr, unsigned d_size, size_t *real_header_len)
 {
 	u8 tmp, iphc0, iphc1;
 	const struct ieee802154_addr *_saddr, *_daddr;
@@ -848,7 +851,12 @@ lowpan_process_data(struct sk_buff *skb, struct ipv6hdr *hdr, unsigned d_size)
 	if (lowpan_fetch_skb_u8(skb, &iphc1))
 		goto drop;
 
+	if (real_header_len) {
+		*real_header_len = 0;
+		*real_header_len += sizeof(struct ipv6hdr);
+	}
 	memset(hdr, 0, sizeof(struct ipv6hdr));
+
 	_saddr = &mac_cb(skb)->sa;
 	_daddr = &mac_cb(skb)->da;
 
@@ -917,6 +925,9 @@ lowpan_process_data(struct sk_buff *skb, struct ipv6hdr *hdr, unsigned d_size)
 
 		pr_debug("NH flag is set, next header carried inline: %02x\n",
 			 hdr->nexthdr);
+	} else {
+		/* TODO check on other nexthdr */
+		hdr->nexthdr = UIP_PROTO_UDP;
 	}
 
 	/* Hop Limit */
@@ -967,7 +978,7 @@ lowpan_process_data(struct sk_buff *skb, struct ipv6hdr *hdr, unsigned d_size)
 				goto drop;
 		}
 	}
-
+	
 	/* UDP data uncompression */
 	if (iphc0 & LOWPAN_IPHC_NH_C) {
 		struct udphdr uh;
@@ -991,11 +1002,11 @@ lowpan_process_data(struct sk_buff *skb, struct ipv6hdr *hdr, unsigned d_size)
 		skb_push(skb, sizeof(struct udphdr));
 		skb_reset_transport_header(skb);
 		skb_copy_to_linear_data(skb, &uh, sizeof(struct udphdr));
+		if (real_header_len)
+			*real_header_len += sizeof(struct udphdr);
 
 		lowpan_raw_dump_table(__func__, "raw UDP header dump",
 				      (u8 *)&uh, sizeof(uh));
-
-		hdr->nexthdr = UIP_PROTO_UDP;
 	}
 
 	pr_debug("skb headroom size = %d, data length = %d\n",
@@ -1128,9 +1139,11 @@ lowpan_skb_fragmentation(struct sk_buff *skb, struct net_device *dev)
 
 	header_length = lowpan_get_mac_header_length(skb);
 	payload_length = skb->len - header_length;
+	tag = lowpan_dev_info(dev)->fragment_tag++;
 	datagram_size = payload_length - mac_cb(skb)->lowpan_header_len
 		+ sizeof(struct ipv6hdr);
-	tag = lowpan_dev_info(dev)->fragment_tag++;
+	if (mac_cb(skb)->is_udp_compression)
+		datagram_size += sizeof(struct udphdr);
 
 	/* first fragment header */
 	head[0] = LOWPAN_DISPATCH_FRAG1 | ((datagram_size >> 8) & 0x7);
@@ -1146,8 +1159,10 @@ lowpan_skb_fragmentation(struct sk_buff *skb, struct net_device *dev)
 		goto exit;
 	}
 
-	datagram_offset = LOWPAN_FRAG1_SIZE + sizeof(struct ipv6hdr);
 	offset = LOWPAN_FRAG1_SIZE + mac_cb(skb)->lowpan_header_len;
+	datagram_offset = LOWPAN_FRAG1_SIZE + sizeof(struct ipv6hdr);
+	if (mac_cb(skb)->is_udp_compression)
+		datagram_offset += sizeof(struct udphdr);
 
 	/* next fragment header */
 	head[0] &= ~LOWPAN_DISPATCH_FRAG1;
@@ -1322,6 +1337,7 @@ static int lowpan_check_frag_complete(struct lowpan_fragment *frame)
 	list_del(&frame->list);
 	
 	del_timer_sync(&frame->timer);
+
 	hdr->payload_len = htons(frame->length - sizeof(struct ipv6hdr));
 	lowpan_give_skb_to_devices(frame->skb);
 	kfree(frame);
@@ -1335,6 +1351,7 @@ static int lowpan_rcv(struct sk_buff *skb, struct net_device *dev,
 	int ret;
 	u16 d_tag, d_size = 0;
 	u8 d_offset;
+	size_t real_header_len;
 	struct ipv6hdr hdr;
 	struct lowpan_fragment *frame;
 
@@ -1375,7 +1392,7 @@ static int lowpan_rcv(struct sk_buff *skb, struct net_device *dev,
 	switch (*skb->data & LOWPAN_DISPATCH_MASK)
 	{
 	case LOWPAN_DISPATCH_IPHC:	/* ipv6 datagram */
-		skb = lowpan_process_data(skb, &hdr, 0);
+		skb = lowpan_process_data(skb, &hdr, 0, NULL);
 		if (!skb)
 			goto drop;
 
@@ -1390,13 +1407,13 @@ static int lowpan_rcv(struct sk_buff *skb, struct net_device *dev,
 		
 		frame = lowpan_get_tag_frame(skb, d_tag, d_size);
 
-		skb = lowpan_process_data(skb, &hdr, d_size);
+		skb = lowpan_process_data(skb, &hdr, d_size, &real_header_len);
 		if (!skb)
 			goto unlock_and_drop;
 		
 		skb_copy_to_linear_data(frame->skb,
 				&hdr, sizeof(struct ipv6hdr));
-		skb_copy_to_linear_data_offset(frame->skb, sizeof(struct ipv6hdr),
+		skb_copy_to_linear_data_offset(frame->skb, real_header_len,
 				skb->data, skb->len);
 		
 		frame->bytes_rcv += sizeof(struct ipv6hdr) + skb->len;
