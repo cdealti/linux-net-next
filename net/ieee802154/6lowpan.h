@@ -240,4 +240,90 @@
 					dest = 16 bit inline */
 #define LOWPAN_NHC_UDP_CS_P_11	0xF3 /* source & dest = 0xF0B + 4bit inline */
 
+
+#define lowpan_dev_info(dev)	((struct lowpan_dev_info *)netdev_priv(dev))
+
+/* private device info */
+struct lowpan_dev_info {
+	struct net_device	*real_dev; /* real WPAN device ptr */
+	struct mutex		dev_list_mtx; /* mutex for list ops */
+	unsigned short		fragment_tag;
+};
+
+struct lowpan_dev_record {
+	struct net_device *ldev;
+	struct list_head list;
+};
+
+struct lowpan_fragment {
+	struct sk_buff		*skb;		/* skb to be assembled */
+	u16			length;		/* length to be assemled */
+	u16			bytes_rcv;	/* bytes received */
+	u16			tag;		/* current fragment tag */
+	struct timer_list	timer;		/* assembling timer */
+	struct list_head	list;		/* fragments list */
+};
+
+static inline void lowpan_address_flip(u8 *src, u8 *dest)
+{
+	int i;
+
+	for (i = 0; i < IEEE802154_ADDR_LEN; i++)
+		dest[IEEE802154_ADDR_LEN - i - 1] = src[i];
+}
+
+static inline int lowpan_fetch_skb(struct sk_buff *skb,
+		void *data, const unsigned int len)
+{
+	if (unlikely(!pskb_may_pull(skb, len)))
+		return -EINVAL;
+
+	skb_copy_from_linear_data(skb, data, len); 
+	skb_pull(skb, len);
+
+	return 0;
+}
+
+static inline void lowpan_push_hc(u8 **hc06_ptr,
+		const void *data, const unsigned int len)
+{
+	memcpy(*hc06_ptr, data, len);
+	*hc06_ptr += len;
+}
+
+
+#ifdef DEBUG
+/* list of all 6lowpan devices, uses for package delivering */
+/* print data in line */
+static inline void lowpan_raw_dump_inline(const char *caller, char *msg,
+				   unsigned char *buf, int len)
+{
+	if (msg)
+		pr_debug("(%s) %s: ", caller, msg);
+	print_hex_dump(KERN_DEBUG, "", DUMP_PREFIX_NONE,
+		       16, 1, buf, len, false);
+}
+
+/*
+ * print data in a table format:
+ *
+ * addr: xx xx xx xx xx xx
+ * addr: xx xx xx xx xx xx
+ * ...
+ */
+static inline void lowpan_raw_dump_table(const char *caller, char *msg,
+				   unsigned char *buf, int len)
+{
+	if (msg)
+		pr_debug("(%s) %s:\n", caller, msg);
+	print_hex_dump(KERN_DEBUG, "\t", DUMP_PREFIX_OFFSET,
+		       16, 1, buf, len, false);
+}
+#else
+static inline void lowpan_raw_dump_inline(const char *caller, char *msg,
+				   unsigned char *buf, int len) { }
+static inline void lowpan_raw_dump_table(const char *caller, char *msg,
+				   unsigned char *buf, int len) { }
+#endif /* DEBUG */
+
 #endif /* __6LOWPAN_H__ */
