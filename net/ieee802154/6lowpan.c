@@ -58,6 +58,7 @@
 #include <net/af_ieee802154.h>
 #include <net/ieee802154.h>
 #include <net/ieee802154_netdev.h>
+#include <net/mac802154.h>
 #include <net/ipv6.h>
 
 #include "6lowpan.h"
@@ -1267,9 +1268,8 @@ static void lowpan_setup(struct net_device *dev)
 	dev->addr_len		= IEEE802154_ADDR_LEN;
 	memset(dev->broadcast, 0xff, IEEE802154_ADDR_LEN);
 	dev->type		= ARPHRD_IEEE802154;
-	/* Frame Control + Sequence Number + Address fields + Security Header */
-	dev->hard_header_len	= 2 + 1 + 20 + 14;
-	dev->needed_tailroom	= 2; /* FCS */
+	dev->hard_header_len	= MAC802154_FRAME_HARD_HEADER_LEN;
+	dev->needed_tailroom	= IEEE802154_MFR_SIZE;
 	dev->mtu		= 1281;
 	dev->tx_queue_len	= 0;
 	dev->flags		= IFF_BROADCAST | IFF_MULTICAST;
