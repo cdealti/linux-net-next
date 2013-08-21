@@ -32,6 +32,7 @@
 #include <net/ieee802154_netdev.h>
 #include <net/ieee802154.h>
 #include <net/wpan-phy.h>
+#include <net/ipv6.h>
 
 #include "mac802154.h"
 
@@ -550,7 +551,8 @@ void mac802154_wpans_rx(struct mac802154_priv *priv, struct sk_buff *skb)
 		if (sdata->type != IEEE802154_DEV_WPAN)
 			continue;
 
-		sskb = skb_clone(skb, GFP_ATOMIC);
+		sskb = skb_realloc_headroom(skb, sizeof(struct ipv6hdr) +
+				sizeof(struct udphdr));
 		if (sskb)
 			mac802154_subif_frame(sdata, sskb);
 	}

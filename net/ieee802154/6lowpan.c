@@ -705,20 +705,13 @@ static int lowpan_header_create(struct sk_buff *skb,
 static int lowpan_give_skb_to_devices(struct sk_buff *skb)
 {
 	struct lowpan_dev_record *entry;
-	struct sk_buff *skb_cp;
 	int stat = NET_RX_SUCCESS;
 
 	rcu_read_lock();
 	list_for_each_entry_rcu(entry, &lowpan_devices, list)
 		if (lowpan_dev_info(entry->ldev)->real_dev == skb->dev) {
-			skb_cp = skb_copy(skb, GFP_ATOMIC);
-			if (!skb_cp) {
-				stat = -ENOMEM;
-				break;
-			}
-
-			skb_cp->dev = entry->ldev;
-			stat = netif_rx(skb_cp);
+			skb->dev = entry->ldev;
+			stat = netif_rx(skb);
 		}
 	rcu_read_unlock();
 
@@ -727,28 +720,16 @@ static int lowpan_give_skb_to_devices(struct sk_buff *skb)
 
 static int lowpan_skb_deliver(struct sk_buff *skb, struct ipv6hdr *hdr)
 {
-	struct sk_buff *new;
 	int stat = NET_RX_SUCCESS;
 
-	new = skb_copy_expand(skb, sizeof(struct ipv6hdr), skb_tailroom(skb),
-								GFP_ATOMIC);
-	kfree_skb(skb);
+	skb_push(skb, sizeof(struct ipv6hdr));
+	skb_reset_network_header(skb);
+	skb_copy_to_linear_data(skb, hdr, sizeof(struct ipv6hdr));
 
-	if (!new)
-		return -ENOMEM;
+	skb->protocol = htons(ETH_P_IPV6);
+	skb->pkt_type = PACKET_HOST;
 
-	skb_push(new, sizeof(struct ipv6hdr));
-	skb_reset_network_header(new);
-	skb_copy_to_linear_data(new, hdr, sizeof(struct ipv6hdr));
-
-	new->protocol = htons(ETH_P_IPV6);
-	new->pkt_type = PACKET_HOST;
-
-	stat = lowpan_give_skb_to_devices(new);
-
-	kfree_skb(new);
-
-	return stat;
+	return lowpan_give_skb_to_devices(skb);
 }
 
 static void lowpan_fragment_timer_expired(unsigned long entry_addr)
@@ -1043,22 +1024,8 @@ lowpan_process_data(struct sk_buff *skb)
 	/* UDP data uncompression */
 	if (iphc0 & LOWPAN_IPHC_NH_C) {
 		struct udphdr uh;
-		struct sk_buff *new;
 		if (lowpan_uncompress_udp_header(skb, &uh))
 			goto drop;
-
-		/*
-		 * replace the compressed UDP head by the uncompressed UDP
-		 * header
-		 */
-		new = skb_copy_expand(skb, sizeof(struct udphdr),
-				      skb_tailroom(skb), GFP_ATOMIC);
-		kfree_skb(skb);
-
-		if (!new)
-			return -ENOMEM;
-
-		skb = new;
 
 		skb_push(skb, sizeof(struct udphdr));
 		skb_reset_transport_header(skb);
@@ -1304,8 +1271,6 @@ static int lowpan_validate(struct nlattr *tb[], struct nlattr *data[])
 static int lowpan_rcv(struct sk_buff *skb, struct net_device *dev,
 	struct packet_type *pt, struct net_device *orig_dev)
 {
-	struct sk_buff *local_skb;
-
 	if (!netif_running(dev))
 		goto drop;
 
@@ -1314,37 +1279,18 @@ static int lowpan_rcv(struct sk_buff *skb, struct net_device *dev,
 
 	/* check that it's our buffer */
 	if (skb->data[0] == LOWPAN_DISPATCH_IPV6) {
-		/* Copy the packet so that the IPv6 header is
-		 * properly aligned.
-		 */
-		local_skb = skb_copy_expand(skb, NET_SKB_PAD - 1,
-					    skb_tailroom(skb), GFP_ATOMIC);
-		if (!local_skb)
-			goto drop;
-
-		local_skb->protocol = htons(ETH_P_IPV6);
-		local_skb->pkt_type = PACKET_HOST;
-
 		/* Pull off the 1-byte of 6lowpan header. */
-		skb_pull(local_skb, 1);
-		skb_reset_network_header(local_skb);
-		skb_set_transport_header(local_skb, sizeof(struct ipv6hdr));
+		skb_pull(skb, 1);
+		skb_reset_network_header(skb);
+		skb_set_transport_header(skb, sizeof(struct ipv6hdr));
 
-		lowpan_give_skb_to_devices(local_skb);
-
-		kfree_skb(local_skb);
-		kfree_skb(skb);
+		lowpan_give_skb_to_devices(skb);
 	} else {
 		switch (skb->data[0] & 0xe0) {
 		case LOWPAN_DISPATCH_IPHC:	/* ipv6 datagram */
 		case LOWPAN_DISPATCH_FRAG1:	/* first fragment header */
 		case LOWPAN_DISPATCH_FRAGN:	/* next fragments headers */
-			local_skb = skb_clone(skb, GFP_ATOMIC);
-			if (!local_skb)
-				goto drop;
-			lowpan_process_data(local_skb);
-
-			kfree_skb(skb);
+			lowpan_process_data(skb);
 			break;
 		default:
 			break;
