@@ -39,6 +39,8 @@ struct ieee802154_mac_cb {
 	struct ieee802154_addr da;
 	u8 flags;
 	u8 seq;
+	u16 dgram_size;
+	u16 dgram_offset;
 };
 
 static inline struct ieee802154_mac_cb *mac_cb(struct sk_buff *skb)

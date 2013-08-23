@@ -375,6 +375,7 @@ lowpan_compress_udp_header(u8 **hc06_ptr, struct sk_buff *skb)
 	memcpy(*hc06_ptr, &uh->check, 2);
 	*hc06_ptr += 2;
 
+	mac_cb(skb)->dgram_offset += sizeof(struct udphdr);
 	/* skip the UDP header */
 	skb_pull(skb, sizeof(struct udphdr));
 }
@@ -486,6 +487,7 @@ static int lowpan_header_create(struct sk_buff *skb,
 	if (type != ETH_P_IPV6)
 		return 0;
 
+	mac_cb(skb)->dgram_offset = 0;
 	hdr = ipv6_hdr(skb);
 	hc06_ptr = head + 2;
 
@@ -655,8 +657,16 @@ static int lowpan_header_create(struct sk_buff *skb,
 	head[0] = iphc0;
 	head[1] = iphc1;
 
+	/* Before replace ipv6hdr to 6lowpan header we save the dgram_size */
+	mac_cb(skb)->dgram_size = ntohs(hdr->payload_len) +
+		sizeof(struct ipv6hdr);
+	mac_cb(skb)->dgram_offset += sizeof(struct ipv6hdr);
+
 	skb_pull(skb, sizeof(struct ipv6hdr));
+	skb_reset_transport_header(skb);
 	memcpy(skb_push(skb, hc06_ptr - head), head, hc06_ptr - head);
+	skb_reset_network_header(skb);
+	skb->hdr_len = hc06_ptr - head;
 
 	lowpan_raw_dump_table(__func__, "raw skb data dump", skb->data,
 				skb->len);
@@ -1074,80 +1084,93 @@ static int lowpan_set_address(struct net_device *dev, void *p)
 
 static int
 lowpan_fragment_xmit(struct sk_buff *skb, u8 *head,
-			int mlen, int plen, int offset, int type)
+		int plen, int offset, int type)
 {
 	struct sk_buff *frag;
-	int hlen, ret;
+	int hlen;
 
 	hlen = (type == LOWPAN_DISPATCH_FRAG1) ?
 			LOWPAN_FRAG1_HEAD_SIZE : LOWPAN_FRAGN_HEAD_SIZE;
 
 	lowpan_raw_dump_inline(__func__, "6lowpan fragment header", head, hlen);
 
-	frag = dev_alloc_skb(hlen + mlen + plen + IEEE802154_MFR_SIZE);
+	frag = netdev_alloc_skb(skb->dev, hlen + skb->mac_len
+			+ plen + IEEE802154_MFR_SIZE);
 	if (!frag)
 		return -ENOMEM;
 
 	frag->priority = skb->priority;
-	frag->dev = skb->dev;
 
 	/* copy header, MFR and payload */
-	memcpy(skb_put(frag, mlen), skb->data, mlen);
-	memcpy(skb_put(frag, hlen), head, hlen);
+	skb_put(frag, skb->mac_len);
+	skb_copy_to_linear_data(frag, skb_mac_header(skb), skb->mac_len);
 
-	if (plen)
-		skb_copy_from_linear_data_offset(skb, offset + mlen,
-					skb_put(frag, plen), plen);
+	skb_put(frag, hlen);
+	skb_copy_to_linear_data_offset(frag, skb->mac_len, head, hlen);
 
-	lowpan_raw_dump_table(__func__, " raw fragment dump", frag->data,
-								frag->len);
+	skb_put(frag, plen);
+	skb_copy_to_linear_data_offset(frag, skb->mac_len + hlen,
+			skb_network_header(skb) + offset, plen);
 
-	ret = dev_queue_xmit(frag);
+	lowpan_raw_dump_table(__func__, " raw fragment dump",
+			frag->data, frag->len);
 
-	return ret;
+	return dev_queue_xmit(frag);
 }
 
 static int
 lowpan_skb_fragmentation(struct sk_buff *skb, struct net_device *dev)
 {
-	int  err, header_length, payload_length, tag, offset = 0;
+	int err, payload_length, tag, dgram_size,
+	    dgram_offset, lowpan_size, frag_plen, offset = 0;
 	u8 head[5];
 
-	header_length = skb->mac_len;
-	payload_length = skb->len - header_length;
+	payload_length = skb->len - skb->mac_len;
 	tag = lowpan_dev_info(dev)->fragment_tag++;
+	lowpan_size = skb->transport_header - skb->network_header;
+	dgram_size = mac_cb(skb)->dgram_size;
 
 	/* first fragment header */
-	head[0] = LOWPAN_DISPATCH_FRAG1 | ((payload_length >> 8) & 0x7);
-	head[1] = payload_length & 0xff;
+	head[0] = LOWPAN_DISPATCH_FRAG1 | ((dgram_size >> 8) & 0x7);
+	head[1] = dgram_size & 0xff;
 	head[2] = tag >> 8;
 	head[3] = tag & 0xff;
 
-	err = lowpan_fragment_xmit(skb, head, header_length, LOWPAN_FRAG_SIZE,
-				   0, LOWPAN_DISPATCH_FRAG1);
+	/* calc the nearest payload length(divided to 8) for first fragment
+	 * which fits into a IEEE802154_MTU
+	 */
+	frag_plen = round_down(IEEE802154_MTU - skb->mac_len -
+			LOWPAN_FRAG1_HEAD_SIZE - lowpan_size -
+			IEEE802154_MFR_SIZE, 8);
 
+	err = lowpan_fragment_xmit(skb, head, frag_plen + lowpan_size,
+			0, LOWPAN_DISPATCH_FRAG1);
 	if (err) {
 		pr_debug("%s unable to send FRAG1 packet (tag: %d)",
 			 __func__, tag);
 		goto exit;
 	}
 
-	offset = LOWPAN_FRAG_SIZE;
+	offset = lowpan_size + frag_plen;
+	dgram_offset = mac_cb(skb)->dgram_offset + frag_plen;
 
 	/* next fragment header */
 	head[0] &= ~LOWPAN_DISPATCH_FRAG1;
 	head[0] |= LOWPAN_DISPATCH_FRAGN;
 
-	while ((payload_length - offset > 0) && (err >= 0)) {
-		int len = LOWPAN_FRAG_SIZE;
+	frag_plen = round_down(IEEE802154_MTU - skb->mac_len -
+			LOWPAN_FRAGN_HEAD_SIZE - IEEE802154_MFR_SIZE, 8);
 
-		head[4] = offset / 8;
+	while (payload_length - offset > 0) {
+		int len = frag_plen;
+
+		head[4] = dgram_offset / 8;
 
 		if (payload_length - offset < len)
 			len = payload_length - offset;
 
-		err = lowpan_fragment_xmit(skb, head, header_length,
-					   len, offset, LOWPAN_DISPATCH_FRAGN);
+		err = lowpan_fragment_xmit(skb, head, len,
+				offset, LOWPAN_DISPATCH_FRAGN);
 		if (err) {
 			pr_debug("%s unable to send a subsequent FRAGN packet "
 				 "(tag: %d, offset: %d", __func__, tag, offset);
@@ -1155,6 +1178,7 @@ lowpan_skb_fragmentation(struct sk_buff *skb, struct net_device *dev)
 		}
 
 		offset += len;
+		dgram_offset += len;
 	}
 
 exit:
