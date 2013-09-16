@@ -39,6 +39,8 @@ struct ieee802154_mac_cb {
 	struct ieee802154_addr da;
 	u8 flags;
 	u8 seq;
+	u16 dgram_size;
+	u16 dgram_offset;
 };
 
 static inline struct ieee802154_mac_cb *mac_cb(struct sk_buff *skb)
@@ -103,10 +105,6 @@ struct ieee802154_mlme_ops {
 	int (*scan_req)(struct net_device *dev,
 			u8 type, u32 channels, u8 page, u8 duration);
 
-	/* The fields below are required. */
-
-	struct wpan_phy *(*get_phy)(const struct net_device *dev);
-
 	/*
 	 * FIXME: these should become the part of PIB/MIB interface.
 	 * However we still don't have IB interface of any kind
@@ -114,16 +112,6 @@ struct ieee802154_mlme_ops {
 	u16 (*get_pan_id)(const struct net_device *dev);
 	u16 (*get_short_addr)(const struct net_device *dev);
 	u8 (*get_dsn)(const struct net_device *dev);
-};
-
-/* The IEEE 802.15.4 standard defines 2 type of the devices:
- * - FFD - full functionality device
- * - RFD - reduce functionality device
- *
- * So 2 sets of mlme operations are needed
- */
-struct ieee802154_reduced_mlme_ops {
-	struct wpan_phy *(*get_phy)(const struct net_device *dev);
 };
 
 static inline struct ieee802154_mlme_ops *

@@ -534,7 +534,7 @@ at86rf230_channel(struct ieee802154_dev *dev, int page, int channel)
 
 	rc = at86rf230_write_subreg(lp, SR_CHANNEL, channel);
 	msleep(1); /* Wait for PLL */
-	dev->phy->current_channel = channel;
+	dev->current_channel = channel;
 
 	return 0;
 }
@@ -865,10 +865,10 @@ static int at86rf230_probe(struct spi_device *spi)
 
 	lp->spi = spi;
 
-	dev->parent = &spi->dev;
+	dev->netdev->dev.parent = &spi->dev;
 	dev->extra_tx_headroom = 0;
 	/* We do support only 2.4 Ghz */
-	dev->phy->channels_supported[0] = 0x7FFF800;
+	dev->channels_supported[0] = 0x7FFF800;
 	dev->flags = IEEE802154_HW_OMIT_CKSUM;
 
 	if (pdata->irq_type & (IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING)) {

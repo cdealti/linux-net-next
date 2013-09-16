@@ -29,6 +29,11 @@
 
 #define IEEE802154_MTU			127
 
+#define IEEE802154_FC_SHIFT		0
+#define IEEE802154_FC_MASK		(3 << IEEE802154_FC_SHIFT)
+#define IEEE802154_FC(x)		\
+	(((x) & IEEE802154_FC_MASK) >> IEEE802154_FC_SHIFT)
+
 #define IEEE802154_FC_TYPE_BEACON	0x0	/* Frame is beacon */
 #define	IEEE802154_FC_TYPE_DATA		0x1	/* Frame is data */
 #define IEEE802154_FC_TYPE_ACK		0x2	/* Frame is acknowledgment */

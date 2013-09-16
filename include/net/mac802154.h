@@ -19,6 +19,8 @@
 #ifndef NET_MAC802154_H
 #define NET_MAC802154_H
 
+#include <linux/workqueue.h>
+#include <linux/netdevice.h>
 #include <net/af_ieee802154.h>
 
 /* General MAC frame format:
@@ -28,6 +30,8 @@
  * 14 bytes: Auxiliary Security Header
  */
 #define MAC802154_FRAME_HARD_HEADER_LEN		(2 + 1 + 20 + 14)
+
+#define MAC802154_CHAN_NONE             (~(u8)0) /* No channel is assigned */
 
 /* The following flags are used to indicate changed address settings from
  * the stack to the hardware.
@@ -55,15 +59,40 @@ struct ieee802154_hw_addr_filt {
 };
 
 struct ieee802154_dev {
+	struct net_device *netdev;
 	/* filled by the driver */
 	int	extra_tx_headroom;
 	u32	flags;
-	struct	device *parent;
+	struct ieee802154_ops *ops;
 
+	spinlock_t mib_lock;
 	/* filled by mac802154 core */
 	struct	ieee802154_hw_addr_filt hw_filt;
+	struct workqueue_struct *workqueue;
 	void	*priv;
-	struct	wpan_phy *phy;
+	int type;
+#if 1
+	__le16 pan_id;
+	__le16 short_addr;
+
+	u8 chan;
+	u8 page;
+#endif
+
+	/* MAC BSN field */
+	u8 bsn;
+	/* MAC DSN field */
+	u8 dsn;
+	/*
+	 * This is a PIB according to 802.15.4-2006.
+	 * We do not provide timing-related variables, as they
+	 * aren't used outside of driver
+	 */
+	u8 current_channel;
+	u8 current_page;
+	u32 channels_supported[32];
+	u8 transmit_power;
+	u8 cca_mode;
 };
 
 /* Checksum is in hardware and is omitted from a packet
