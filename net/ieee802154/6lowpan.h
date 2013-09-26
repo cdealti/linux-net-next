@@ -238,7 +238,9 @@ static inline bool lowpan_fetch_skb(struct sk_buff *skb,
 	if (unlikely(!pskb_may_pull(skb, len)))
 		return true;
 
-	skb_copy_from_linear_data(skb, data, len);
+	if (data)
+		skb_copy_from_linear_data(skb, data, len);
+
 	skb_pull(skb, len);
 
 	return false;
