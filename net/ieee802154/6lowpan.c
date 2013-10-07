@@ -1257,8 +1257,11 @@ static int lowpan_check_frag_complete(struct lowpan_fragment *frame)
 	if (frame->bytes_rcv != frame->length)
 		return ret;
 
+	ret = try_to_del_timer_sync(&frame->timer);
+	if (ret == -1)
+		return ret;
+
 	list_del(&frame->list);
-	del_timer_sync(&frame->timer);
 
 	ret = lowpan_give_skb_to_devices(frame->skb);
 	kfree(frame);
