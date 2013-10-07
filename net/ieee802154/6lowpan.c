@@ -749,7 +749,9 @@ static void lowpan_fragment_timer_expired(unsigned long entry_addr)
 
 	pr_debug("timer expired for frame with tag %d\n", entry->tag);
 
+	spin_lock_bh(&flist_lock);
 	list_del(&entry->list);
+	spin_unlock_bh(&flist_lock);
 	dev_kfree_skb(entry->skb);
 	kfree(entry);
 }
