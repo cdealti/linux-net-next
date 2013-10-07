@@ -348,8 +348,8 @@ lowpan_compress_udp_header(u8 **hc06_ptr, struct sk_buff *skb)
 			LOWPAN_NHC_UDP_8BIT_PORT) {
 		pr_debug("UDP header: remove 8 bits of source\n");
 		**hc06_ptr = LOWPAN_NHC_UDP_CS_P_10;
-		memcpy(*hc06_ptr + 1, &uh->dest, 2);
-		*(*hc06_ptr + 3) = (u8)(uh->source - LOWPAN_NHC_UDP_8BIT_PORT);
+		*(*hc06_ptr + 1) = (u8)(uh->source - LOWPAN_NHC_UDP_8BIT_PORT);
+		memcpy(*hc06_ptr + 2, &uh->dest, 2);
 		*hc06_ptr += 4;
 	} else {
 		pr_debug("UDP header: can't compress\n");
