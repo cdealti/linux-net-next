@@ -438,9 +438,14 @@ lowpan_uncompress_udp_header(struct sk_buff *skb, struct udphdr *uh)
 		pr_debug("uncompressed UDP ports: src = %d, dst = %d\n",
 			 ntohs(uh->source), ntohs(uh->dest));
 
-		/* copy checksum */
-		memcpy(&uh->check, &skb->data[0], 2);
-		skb_pull(skb, 2);
+		/* checksum */
+		if (tmp & LOWPAN_NHC_UDP_CS_C) {
+			pr_debug("checksum elided currently not supported");
+			goto err;
+		} else {
+			memcpy(&uh->check, &skb->data[0], 2);
+			skb_pull(skb, 2);
+		}
 
 		/*
 		 * UDP lenght needs to be infered from the lower layers
