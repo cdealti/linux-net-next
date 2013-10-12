@@ -1065,7 +1065,7 @@ lowpan_process_data(struct sk_buff *skb)
 		skb_copy_to_linear_data(skb, &uh, sizeof(struct udphdr));
 
 		lowpan_raw_dump_table(__func__, "raw UDP header dump",
-				      (u8 *)&uh, sizeof(uh));
+				(u8 *)&uh, sizeof(uh));
 
 		hdr.nexthdr = UIP_PROTO_UDP;
 	}
@@ -1080,8 +1080,8 @@ lowpan_process_data(struct sk_buff *skb)
 		 "nexthdr = 0x%02x\n\thop_lim = %d\n", hdr.version,
 		 ntohs(hdr.payload_len), hdr.nexthdr, hdr.hop_limit);
 
-	lowpan_raw_dump_table(__func__, "raw header dump", (u8 *)&hdr,
-							sizeof(hdr));
+	lowpan_raw_dump_table(__func__, "raw header dump",
+			(u8 *)&hdr, sizeof(hdr));
 	return lowpan_skb_deliver(skb, &hdr);
 
 unlock_and_drop:
@@ -1117,7 +1117,7 @@ static int lowpan_get_mac_header_length(struct sk_buff *skb)
 
 static int
 lowpan_fragment_xmit(struct sk_buff *skb, u8 *head,
-			int mlen, int plen, int offset, int type)
+		int mlen, int plen, int offset, int type)
 {
 	struct sk_buff *frag;
 	int hlen, ret;
@@ -1142,8 +1142,8 @@ lowpan_fragment_xmit(struct sk_buff *skb, u8 *head,
 		skb_copy_from_linear_data_offset(skb, offset + mlen,
 					skb_put(frag, plen), plen);
 
-	lowpan_raw_dump_table(__func__, " raw fragment dump", frag->data,
-								frag->len);
+	lowpan_raw_dump_table(__func__, " raw fragment dump",
+			frag->data, frag->len);
 
 	ret = dev_queue_xmit(frag);
 
