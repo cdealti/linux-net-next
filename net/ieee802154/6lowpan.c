@@ -709,6 +709,9 @@ static int lowpan_give_skb_to_devices(struct sk_buff *skb)
 	struct lowpan_dev_record *entry;
 	int stat = NET_RX_SUCCESS;
 
+	skb->protocol = htons(ETH_P_IPV6);
+	skb->pkt_type = PACKET_HOST;
+
 	rcu_read_lock();
 	list_for_each_entry_rcu(entry, &lowpan_devices, list)
 		if (lowpan_dev_info(entry->ldev)->real_dev == skb->dev) {
@@ -718,19 +721,6 @@ static int lowpan_give_skb_to_devices(struct sk_buff *skb)
 	rcu_read_unlock();
 
 	return stat;
-}
-
-static int lowpan_skb_deliver(struct sk_buff *skb, struct ipv6hdr *hdr)
-{
-	int stat = NET_RX_SUCCESS;
-
-	skb_push(skb, sizeof(struct ipv6hdr));
-	skb_copy_to_linear_data(skb, hdr, sizeof(struct ipv6hdr));
-
-	skb->protocol = htons(ETH_P_IPV6);
-	skb->pkt_type = PACKET_HOST;
-
-	return lowpan_give_skb_to_devices(skb);
 }
 
 static void lowpan_fragment_timer_expired(unsigned long entry_addr)
@@ -1049,7 +1039,11 @@ lowpan_process_data(struct sk_buff *skb)
 
 	lowpan_raw_dump_table(__func__, "raw header dump",
 			(u8 *)&hdr, sizeof(hdr));
-	return lowpan_skb_deliver(skb, &hdr);
+
+	skb_push(skb, sizeof(struct ipv6hdr));
+	skb_copy_to_linear_data(skb, &hdr, sizeof(struct ipv6hdr));
+
+	return lowpan_give_skb_to_devices(skb);
 
 unlock_and_drop:
 	spin_unlock_bh(&flist_lock);
