@@ -84,6 +84,8 @@ struct lowpan_fragment {
 	u16			length;		/* length to be assemled */
 	u32			bytes_rcv;	/* bytes received */
 	u16			tag;		/* current fragment tag */
+	struct ieee802154_addr	sa;		/* source address */
+	struct ieee802154_addr	da;		/* destination address */
 	struct timer_list	timer;		/* assembling timer */
 	struct list_head	list;		/* fragments list */
 };
@@ -760,6 +762,11 @@ lowpan_alloc_new_frame(struct sk_buff *skb, u16 len, u16 tag)
 
 	frame->length = len;
 	frame->tag = tag;
+	memcpy(&frame->sa, &mac_cb(skb)->sa,
+			sizeof(struct ieee802154_addr));
+	memcpy(&frame->da, &mac_cb(skb)->da,
+			sizeof(struct ieee802154_addr));
+
 
 	/* allocate buffer for frame assembling */
 	frame->skb = netdev_alloc_skb(skb->dev, frame->length);
@@ -1228,7 +1235,11 @@ static struct lowpan_fragment *lowpan_get_frame(
 	struct lowpan_fragment *frame;
 
 	list_for_each_entry(frame, &lowpan_fragments, list) {
-		if (frame->tag == d_tag)
+		if (frame->tag == d_tag &&
+				lowpan_equal_ieee802154_addr(&frame->sa,
+					&mac_cb(skb)->sa) &&
+				lowpan_equal_ieee802154_addr(&frame->da,
+					&mac_cb(skb)->da))
 			return frame;
 	}
 

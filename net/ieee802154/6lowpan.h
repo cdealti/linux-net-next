@@ -246,4 +246,32 @@ static inline bool lowpan_fetch_skb(struct sk_buff *skb,
 	return false;
 }
 
+/* Checks if ieee802154_addr are equals,
+ * if yes return 1 otherwise 0
+ */
+static inline int lowpan_equal_ieee802154_addr(struct ieee802154_addr *a,
+		struct ieee802154_addr *b)
+{
+	if (a->pan_id != b->pan_id)
+		return 0;
+
+	if (a->addr_type != b->addr_type)
+		return 0;
+
+	switch (a->addr_type) {
+	case IEEE802154_ADDR_LONG:
+		if (memcmp(a->hwaddr, b->hwaddr, IEEE802154_ADDR_LEN))
+			return 0;
+		break;
+	case IEEE802154_ADDR_SHORT:
+		if (a->short_addr != b->short_addr)
+			return 0;
+		break;
+	default:
+		return 0;
+	}
+
+	return 1;
+}
+
 #endif /* __6LOWPAN_H__ */
