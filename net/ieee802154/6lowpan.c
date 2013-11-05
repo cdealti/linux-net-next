@@ -60,6 +60,7 @@
 #include <net/ieee802154_netdev.h>
 #include <net/ipv6.h>
 
+#include "reassembly.h"
 #include "6lowpan.h"
 
 /* TTL uncompression values */
@@ -78,18 +79,6 @@ struct lowpan_dev_record {
 	struct net_device *ldev;
 	struct list_head list;
 };
-
-struct lowpan_fragment {
-	struct sk_buff		*skb;		/* skb to be assembled */
-	u16			length;		/* length to be assemled */
-	u32			bytes_rcv;	/* bytes received */
-	u16			tag;		/* current fragment tag */
-	struct timer_list	timer;		/* assembling timer */
-	struct list_head	list;		/* fragments list */
-};
-
-static LIST_HEAD(lowpan_fragments);
-static DEFINE_SPINLOCK(flist_lock);
 
 static inline struct
 lowpan_dev_info *lowpan_dev_info(const struct net_device *dev)
@@ -758,69 +747,6 @@ static int lowpan_skb_deliver(struct sk_buff *skb, struct ipv6hdr *hdr)
 	return stat;
 }
 
-static void lowpan_fragment_timer_expired(unsigned long entry_addr)
-{
-	struct lowpan_fragment *entry = (struct lowpan_fragment *)entry_addr;
-
-	pr_debug("timer expired for frame with tag %d\n", entry->tag);
-
-	list_del(&entry->list);
-	dev_kfree_skb(entry->skb);
-	kfree(entry);
-}
-
-static struct lowpan_fragment *
-lowpan_alloc_new_frame(struct sk_buff *skb, u16 len, u16 tag)
-{
-	struct lowpan_fragment *frame;
-
-	frame = kzalloc(sizeof(struct lowpan_fragment),
-			GFP_ATOMIC);
-	if (!frame)
-		goto frame_err;
-
-	INIT_LIST_HEAD(&frame->list);
-
-	frame->length = len;
-	frame->tag = tag;
-
-	/* allocate buffer for frame assembling */
-	frame->skb = netdev_alloc_skb_ip_align(skb->dev, frame->length +
-					       sizeof(struct ipv6hdr));
-
-	if (!frame->skb)
-		goto skb_err;
-
-	frame->skb->priority = skb->priority;
-
-	/* reserve headroom for uncompressed ipv6 header */
-	skb_reserve(frame->skb, sizeof(struct ipv6hdr));
-	skb_put(frame->skb, frame->length);
-
-	/* copy the first control block to keep a
-	 * trace of the link-layer addresses in case
-	 * of a link-local compressed address
-	 */
-	memcpy(frame->skb->cb, skb->cb, sizeof(skb->cb));
-
-	init_timer(&frame->timer);
-	/* time out is the same as for ipv6 - 60 sec */
-	frame->timer.expires = jiffies + LOWPAN_FRAG_TIMEOUT;
-	frame->timer.data = (unsigned long)frame;
-	frame->timer.function = lowpan_fragment_timer_expired;
-
-	add_timer(&frame->timer);
-
-	list_add_tail(&frame->list, &lowpan_fragments);
-
-	return frame;
-
-skb_err:
-	kfree(frame);
-frame_err:
-	return NULL;
-}
-
 static int
 lowpan_process_data(struct sk_buff *skb)
 {
@@ -837,94 +763,6 @@ lowpan_process_data(struct sk_buff *skb)
 
 	if (lowpan_fetch_skb_u8(skb, &iphc0))
 		goto drop;
-
-	/* fragments assembling */
-	switch (iphc0 & LOWPAN_DISPATCH_MASK) {
-	case LOWPAN_DISPATCH_FRAG1:
-	case LOWPAN_DISPATCH_FRAGN:
-	{
-		struct lowpan_fragment *frame;
-		/* slen stores the rightmost 8 bits of the 11 bits length */
-		u8 slen, offset = 0;
-		u16 len, tag;
-		bool found = false;
-
-		if (lowpan_fetch_skb_u8(skb, &slen) || /* frame length */
-		    lowpan_fetch_skb_u16(skb, &tag))  /* fragment tag */
-			goto drop;
-
-		/* adds the 3 MSB to the 8 LSB to retrieve the 11 bits length */
-		len = ((iphc0 & 7) << 8) | slen;
-
-		if ((iphc0 & LOWPAN_DISPATCH_MASK) == LOWPAN_DISPATCH_FRAG1) {
-			pr_debug("%s received a FRAG1 packet (tag: %d, "
-				 "size of the entire IP packet: %d)",
-				 __func__, tag, len);
-		} else { /* FRAGN */
-			if (lowpan_fetch_skb_u8(skb, &offset))
-				goto unlock_and_drop;
-			pr_debug("%s received a FRAGN packet (tag: %d, "
-				 "size of the entire IP packet: %d, "
-				 "offset: %d)", __func__, tag, len, offset * 8);
-		}
-
-		/*
-		 * check if frame assembling with the same tag is
-		 * already in progress
-		 */
-		spin_lock_bh(&flist_lock);
-
-		list_for_each_entry(frame, &lowpan_fragments, list)
-			if (frame->tag == tag) {
-				found = true;
-				break;
-			}
-
-		/* alloc new frame structure */
-		if (!found) {
-			pr_debug("%s first fragment received for tag %d, "
-				 "begin packet reassembly", __func__, tag);
-			frame = lowpan_alloc_new_frame(skb, len, tag);
-			if (!frame)
-				goto unlock_and_drop;
-		}
-
-		/* if payload fits buffer, copy it */
-		if (likely((offset * 8 + skb->len) <= frame->length))
-			skb_copy_to_linear_data_offset(frame->skb, offset * 8,
-							skb->data, skb->len);
-		else
-			goto unlock_and_drop;
-
-		frame->bytes_rcv += skb->len;
-
-		/* frame assembling complete */
-		if ((frame->bytes_rcv == frame->length) &&
-		     frame->timer.expires > jiffies) {
-			/* if timer haven't expired - first of all delete it */
-			del_timer_sync(&frame->timer);
-			list_del(&frame->list);
-			spin_unlock_bh(&flist_lock);
-
-			pr_debug("%s successfully reassembled fragment "
-				 "(tag %d)", __func__, tag);
-
-			dev_kfree_skb(skb);
-			skb = frame->skb;
-			kfree(frame);
-
-			if (lowpan_fetch_skb_u8(skb, &iphc0))
-				goto drop;
-
-			break;
-		}
-		spin_unlock_bh(&flist_lock);
-
-		return kfree_skb(skb), 0;
-	}
-	default:
-		break;
-	}
 
 	if (lowpan_fetch_skb_u8(skb, &iphc1))
 		goto drop;
@@ -1050,6 +888,7 @@ lowpan_process_data(struct sk_buff *skb)
 	if (iphc0 & LOWPAN_IPHC_NH_C) {
 		struct udphdr uh;
 		struct sk_buff *new;
+
 		if (lowpan_uncompress_udp_header(skb, &uh))
 			goto drop;
 
@@ -1075,7 +914,6 @@ lowpan_process_data(struct sk_buff *skb)
 		hdr.nexthdr = UIP_PROTO_UDP;
 	}
 
-	/* Not fragmented package */
 	hdr.payload_len = htons(skb->len);
 
 	pr_debug("skb headroom size = %d, data length = %d\n",
@@ -1087,10 +925,9 @@ lowpan_process_data(struct sk_buff *skb)
 
 	lowpan_raw_dump_table(__func__, "raw header dump", (u8 *)&hdr,
 							sizeof(hdr));
+
 	return lowpan_skb_deliver(skb, &hdr);
 
-unlock_and_drop:
-	spin_unlock_bh(&flist_lock);
 drop:
 	kfree_skb(skb);
 	return -EINVAL;
@@ -1315,6 +1152,7 @@ static int lowpan_rcv(struct sk_buff *skb, struct net_device *dev,
 	struct packet_type *pt, struct net_device *orig_dev)
 {
 	struct sk_buff *local_skb;
+	int ret = NET_RX_DROP, reassembled;
 
 	if (!netif_running(dev))
 		goto drop;
@@ -1345,12 +1183,34 @@ static int lowpan_rcv(struct sk_buff *skb, struct net_device *dev,
 	} else {
 		switch (skb->data[0] & 0xe0) {
 		case LOWPAN_DISPATCH_IPHC:	/* ipv6 datagram */
-		case LOWPAN_DISPATCH_FRAG1:	/* first fragment header */
-		case LOWPAN_DISPATCH_FRAGN:	/* next fragments headers */
 			local_skb = skb_clone(skb, GFP_ATOMIC);
 			if (!local_skb)
 				goto drop;
 			lowpan_process_data(local_skb);
+
+			kfree_skb(skb);
+			break;
+		case LOWPAN_DISPATCH_FRAG1:	/* first fragment header */
+			local_skb = skb_clone(skb, GFP_ATOMIC);
+			if (!local_skb)
+				goto drop;
+
+			reassembled = lowpan_frag_rcv(local_skb,
+						      LOWPAN_DISPATCH_FRAG1);
+			if (reassembled == 1)
+				ret = lowpan_process_data(local_skb);
+
+			kfree_skb(skb);
+			break;
+		case LOWPAN_DISPATCH_FRAGN:	/* next fragments headers */
+			local_skb = skb_clone(skb, GFP_ATOMIC);
+			if (!local_skb)
+				goto drop;
+
+			reassembled = lowpan_frag_rcv(local_skb,
+						      LOWPAN_DISPATCH_FRAGN);
+			if (reassembled == 1)
+				ret = lowpan_process_data(local_skb);
 
 			kfree_skb(skb);
 			break;
@@ -1359,7 +1219,7 @@ static int lowpan_rcv(struct sk_buff *skb, struct net_device *dev,
 		}
 	}
 
-	return NET_RX_SUCCESS;
+	return ret;
 
 drop:
 	kfree_skb(skb);
@@ -1490,6 +1350,10 @@ static int __init lowpan_init_module(void)
 {
 	int err = 0;
 
+	err = lowpan_net_frag_init();
+	if (err < 0)
+		goto out;
+
 	err = lowpan_netlink_init();
 	if (err < 0)
 		goto out;
@@ -1507,26 +1371,13 @@ out:
 
 static void __exit lowpan_cleanup_module(void)
 {
-	struct lowpan_fragment *frame, *tframe;
-
 	lowpan_netlink_fini();
 
 	dev_remove_pack(&lowpan_packet_type);
 
-	unregister_netdevice_notifier(&lowpan_dev_notifier);
+	lowpan_net_frag_exit();
 
-	/* Now 6lowpan packet_type is removed, so no new fragments are
-	 * expected on RX, therefore that's the time to clean incomplete
-	 * fragments.
-	 */
-	spin_lock_bh(&flist_lock);
-	list_for_each_entry_safe(frame, tframe, &lowpan_fragments, list) {
-		del_timer_sync(&frame->timer);
-		list_del(&frame->list);
-		dev_kfree_skb(frame->skb);
-		kfree(frame);
-	}
-	spin_unlock_bh(&flist_lock);
+	unregister_netdevice_notifier(&lowpan_dev_notifier);
 }
 
 module_init(lowpan_init_module);
