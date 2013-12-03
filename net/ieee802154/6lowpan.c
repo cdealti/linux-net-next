@@ -1176,7 +1176,7 @@ static int lowpan_rcv(struct sk_buff *skb, struct net_device *dev,
 		/* Pull off the 1-byte of 6lowpan header. */
 		skb_pull(local_skb, 1);
 
-		lowpan_give_skb_to_devices(local_skb);
+		ret = lowpan_give_skb_to_devices(local_skb);
 
 		kfree_skb(local_skb);
 		kfree_skb(skb);
@@ -1186,7 +1186,7 @@ static int lowpan_rcv(struct sk_buff *skb, struct net_device *dev,
 			local_skb = skb_clone(skb, GFP_ATOMIC);
 			if (!local_skb)
 				goto drop;
-			lowpan_process_data(local_skb);
+			ret = lowpan_process_data(local_skb);
 
 			kfree_skb(skb);
 			break;
